@@ -1,28 +1,54 @@
+//! Apple and Beats model identification and hardware feature capability matrices.
+//!
+//! Provides the [`AppleModel`] enum covering AirPods generations and Beats wireless models,
+//! parsing logic for BlueZ Bluetooth `Modalias` vendor/product strings and device display names,
+//! and feature flag definitions via [`AppleCapabilities`].
+
 use serde::{Deserialize, Serialize};
 
+/// Enumeration of recognized Apple and Beats headphone and earbud models.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AppleModel {
+    /// AirPods 1st generation (2016).
     Gen1,
+    /// AirPods 2nd generation (2019).
     Gen2,
+    /// AirPods 3rd generation (2021).
     Gen3,
+    /// AirPods 4 standard edition (2024).
     Gen4,
+    /// AirPods 4 with Active Noise Cancellation (2024).
     Gen4Anc,
+    /// AirPods Pro 1st generation (2019).
     Pro,
+    /// AirPods Pro 2nd generation Lightning (2022).
     Pro2,
+    /// AirPods Pro 2nd generation USB-C / MagSafe (2023).
     Pro2UsbC,
+    /// AirPods Pro 3rd generation.
     Pro3,
+    /// AirPods Max Lightning (2020).
     Max,
+    /// AirPods Max USB-C (2024).
     MaxUsbC,
+    /// AirPods Max 2nd generation.
     Max2,
+    /// Beats Fit Pro with Apple H1 chip.
     BeatsFitPro,
+    /// Beats Studio Pro over-ear.
     BeatsStudioPro,
+    /// Beats Studio Buds+ wireless earbuds.
     BeatsStudioBudsPlus,
+    /// Beats Solo 4 wireless over-ear.
     BeatsSolo4,
+    /// Beats Solo Buds.
     BeatsSoloBuds,
+    /// Unidentified or generic Apple accessory.
     Unknown,
 }
 
 impl AppleModel {
+    /// Identifies the model from a 16-bit Apple Bluetooth USB/HID Product ID (PID).
     pub fn from_product_code(product_code: u16) -> Self {
         match product_code {
             0x2002 => Self::Gen1,
@@ -45,6 +71,9 @@ impl AppleModel {
         }
     }
 
+    /// Identifies the model from a BlueZ `Modalias` string (e.g. `"bluetooth:v004Cp2024d0600"`).
+    ///
+    /// Apple vendor ID in modalias is `v004C`.
     pub fn from_modalias(modalias: &str) -> Self {
         let lower = modalias.to_lowercase();
         let Some(v_idx) = lower.find("v004c") else {
@@ -66,6 +95,7 @@ impl AppleModel {
         }
     }
 
+    /// Identifies the model from a device name substring (e.g. `"Abhijit's AirPods Pro"`).
     pub fn from_name(name: &str) -> Self {
         let lower = name.to_lowercase();
         if lower.contains("beats fit pro") {
@@ -101,6 +131,7 @@ impl AppleModel {
         }
     }
 
+    /// Returns the human-readable product display name.
     pub fn display_name(&self) -> &'static str {
         match self {
             Self::Gen1 => "AirPods (1st gen)",
@@ -124,27 +155,33 @@ impl AppleModel {
         }
     }
 
+    /// Returns the hardware capabilities and feature support flags for this model.
     pub fn capabilities(&self) -> AppleCapabilities {
         match self {
-            Self::Gen1 | Self::Gen2 | Self::Gen3 | Self::Gen4 | Self::BeatsSolo4 | Self::BeatsSoloBuds => {
-                AppleCapabilities {
-                    model: *self,
-                    has_anc: false,
-                    has_transparency: false,
-                    has_adaptive: false,
-                    has_conv_awareness: false,
-                    has_case_battery: true,
-                    has_in_ear_detection: true,
-                    has_ear_detection_setting: true,
-                    has_loud_sound_reduction: false,
-                    has_spatial_audio: *self == Self::Gen3 || *self == Self::Gen4 || *self == Self::BeatsSolo4,
-                    has_press_volume: false,
-                    has_press_and_hold: false,
-                    has_mic_selection: true,
-                    has_rename: true,
-                    has_tone_on_press: false,
-                }
-            }
+            Self::Gen1
+            | Self::Gen2
+            | Self::Gen3
+            | Self::Gen4
+            | Self::BeatsSolo4
+            | Self::BeatsSoloBuds => AppleCapabilities {
+                model: *self,
+                has_anc: false,
+                has_transparency: false,
+                has_adaptive: false,
+                has_conv_awareness: false,
+                has_case_battery: true,
+                has_in_ear_detection: true,
+                has_ear_detection_setting: true,
+                has_loud_sound_reduction: false,
+                has_spatial_audio: *self == Self::Gen3
+                    || *self == Self::Gen4
+                    || *self == Self::BeatsSolo4,
+                has_press_volume: false,
+                has_press_and_hold: false,
+                has_mic_selection: true,
+                has_rename: true,
+                has_tone_on_press: false,
+            },
             Self::Gen4Anc => AppleCapabilities {
                 model: *self,
                 has_anc: true,
@@ -220,26 +257,43 @@ impl AppleModel {
     }
 }
 
+/// Feature capabilities map indicating which controls are supported on a specific Apple model.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppleCapabilities {
+    /// The associated Apple model.
     pub model: AppleModel,
+    /// Supports active noise cancellation mode.
     pub has_anc: bool,
+    /// Supports transparency mode.
     pub has_transparency: bool,
+    /// Supports adaptive audio mode (AirPods Pro 2, AirPods 4 ANC).
     pub has_adaptive: bool,
+    /// Supports Conversation Awareness automatic volume reduction (AirPods Pro 2, AirPods 4 ANC).
     pub has_conv_awareness: bool,
+    /// Reports charging case battery level.
     pub has_case_battery: bool,
+    /// Has optical or capacitive in-ear wear sensors.
     pub has_in_ear_detection: bool,
+    /// Supports toggling automatic ear detection setting.
     pub has_ear_detection_setting: bool,
+    /// Supports loud sound reduction / hearing protection.
     pub has_loud_sound_reduction: bool,
+    /// Supports personalized spatial audio.
     pub has_spatial_audio: bool,
+    /// Supports stem swipe volume adjustments.
     pub has_press_volume: bool,
+    /// Supports stem press-and-hold customization.
     pub has_press_and_hold: bool,
+    /// Supports explicit left/right/auto microphone selection.
     pub has_mic_selection: bool,
+    /// Supports Bluetooth device renaming over AAP.
     pub has_rename: bool,
+    /// Plays confirmation tone on stem press.
     pub has_tone_on_press: bool,
 }
 
 impl AppleCapabilities {
+    /// Fallback conservative capabilities configuration for unrecognized Apple models.
     pub fn conservative(model: AppleModel) -> Self {
         Self {
             model,
@@ -275,11 +329,26 @@ mod tests {
         assert_eq!(AppleModel::from_product_code(0x2013), AppleModel::Gen3);
         assert_eq!(AppleModel::from_product_code(0x200F), AppleModel::Gen2);
         assert_eq!(AppleModel::from_product_code(0x2002), AppleModel::Gen1);
-        assert_eq!(AppleModel::from_product_code(0x2012), AppleModel::BeatsFitPro);
-        assert_eq!(AppleModel::from_product_code(0x2017), AppleModel::BeatsStudioPro);
-        assert_eq!(AppleModel::from_product_code(0x2019), AppleModel::BeatsStudioBudsPlus);
-        assert_eq!(AppleModel::from_product_code(0x2025), AppleModel::BeatsSolo4);
-        assert_eq!(AppleModel::from_product_code(0x2026), AppleModel::BeatsSoloBuds);
+        assert_eq!(
+            AppleModel::from_product_code(0x2012),
+            AppleModel::BeatsFitPro
+        );
+        assert_eq!(
+            AppleModel::from_product_code(0x2017),
+            AppleModel::BeatsStudioPro
+        );
+        assert_eq!(
+            AppleModel::from_product_code(0x2019),
+            AppleModel::BeatsStudioBudsPlus
+        );
+        assert_eq!(
+            AppleModel::from_product_code(0x2025),
+            AppleModel::BeatsSolo4
+        );
+        assert_eq!(
+            AppleModel::from_product_code(0x2026),
+            AppleModel::BeatsSoloBuds
+        );
         assert_eq!(AppleModel::from_product_code(0x9999), AppleModel::Unknown);
     }
 
@@ -297,18 +366,39 @@ mod tests {
             AppleModel::from_modalias("bluetooth:v004Cp200Ad0600"),
             AppleModel::Max
         );
-        assert_eq!(AppleModel::from_modalias("usb:v05ACp0223"), AppleModel::Unknown);
+        assert_eq!(
+            AppleModel::from_modalias("usb:v05ACp0223"),
+            AppleModel::Unknown
+        );
         assert_eq!(AppleModel::from_modalias(""), AppleModel::Unknown);
     }
 
     #[test]
     fn test_name_fallback() {
-        assert_eq!(AppleModel::from_name("Abhijit's AirPods Pro"), AppleModel::Pro);
-        assert_eq!(AppleModel::from_name("AirPods Pro (2nd generation)"), AppleModel::Pro2);
-        assert_eq!(AppleModel::from_name("AirPods Max - Silver"), AppleModel::Max);
-        assert_eq!(AppleModel::from_name("Beats Fit Pro"), AppleModel::BeatsFitPro);
-        assert_eq!(AppleModel::from_name("Beats Studio Pro"), AppleModel::BeatsStudioPro);
-        assert_eq!(AppleModel::from_name("Some Random Headphone"), AppleModel::Unknown);
+        assert_eq!(
+            AppleModel::from_name("Abhijit's AirPods Pro"),
+            AppleModel::Pro
+        );
+        assert_eq!(
+            AppleModel::from_name("AirPods Pro (2nd generation)"),
+            AppleModel::Pro2
+        );
+        assert_eq!(
+            AppleModel::from_name("AirPods Max - Silver"),
+            AppleModel::Max
+        );
+        assert_eq!(
+            AppleModel::from_name("Beats Fit Pro"),
+            AppleModel::BeatsFitPro
+        );
+        assert_eq!(
+            AppleModel::from_name("Beats Studio Pro"),
+            AppleModel::BeatsStudioPro
+        );
+        assert_eq!(
+            AppleModel::from_name("Some Random Headphone"),
+            AppleModel::Unknown
+        );
     }
 
     #[test]

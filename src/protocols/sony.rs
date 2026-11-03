@@ -1,17 +1,42 @@
+//! Sony MDR Bluetooth protocol encoding, framing, and command payload builders.
+//!
+//! Sony WH-1000XM / WF-1000XM / MDR series headphones communicate over RFCOMM using
+//! the Sony MDR packet protocol. Packets are framed with start (`0x3E`), end (`0x3C`),
+//! and escape (`0x3D`) markers with an additive wrapping checksum.
+//!
+//! This module provides:
+//! - [`SonyMDRPacket`]: packet representation with data type, sequence number, and payload.
+//! - [`SonyMDRFraming`]: frame serialization with escape byte handling and checksum calculation.
+//! - [`SonyMDRFrameParser`]: resilient streaming frame parser with desync protection.
+//! - [`SonyV1Opcode`]: Sony V1 command constants (EQ, NC, touch, optimizer, power).
+//! - [`SonyV1EqualizerPreset`]: factory EQ presets (Bright, Excited, Vocal, Bass Boost, etc.).
+//! - [`SonyV1Payloads`]: command payload builders for setting EQ bands, NC modes, and power timeouts.
+//!
+//! Protocol framing and command structure insights are derived from or inspired by
+//! [HeadBridge](https://github.com/herenickname/HeadBridge).
+
 use serde::{Deserialize, Serialize};
 
+/// A decoded Sony MDR protocol packet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SonyMDRPacket {
+    /// Packet type (e.g. [`SonyMDRPacket::COMMAND_TYPE`] or [`SonyMDRPacket::ACK_TYPE`]).
     pub data_type: u8,
+    /// Sequence number / alternating sequence bit.
     pub sequence: u8,
+    /// Command or response payload bytes.
     pub payload: Vec<u8>,
 }
 
 impl SonyMDRPacket {
+    /// Packet type byte for Acknowledgment packets (`0x01`).
     pub const ACK_TYPE: u8 = 0x01;
+    /// Packet type byte for standard Command packets (`0x0C`).
     pub const COMMAND_TYPE: u8 = 0x0C;
+    /// Secondary command packet type (`0x0E`).
     pub const COMMAND_TYPE2: u8 = 0x0E;
 
+    /// Constructs a new [`SonyMDRPacket`].
     pub fn new(data_type: u8, sequence: u8, payload: Vec<u8>) -> Self {
         Self {
             data_type,
@@ -21,14 +46,23 @@ impl SonyMDRPacket {
     }
 }
 
+/// Framing encoder for Sony MDR packets.
+///
+/// Encodes packets into wire format: `[0x3E, data_type, sequence, length (4 bytes BE), payload, checksum, 0x3C]`
+/// with byte-escaping for `0x3E`, `0x3C`, and `0x3D` bytes.
 pub struct SonyMDRFraming;
 
 impl SonyMDRFraming {
+    /// Start of frame delimiter (`0x3E`).
     pub const START_MARKER: u8 = 0x3E;
+    /// End of frame delimiter (`0x3C`).
     pub const END_MARKER: u8 = 0x3C;
+    /// Escape marker byte (`0x3D`).
     pub const ESCAPE_MARKER: u8 = 0x3D;
+    /// Bitwise mask applied to escaped bytes (`0xEF`).
     pub const ESCAPE_MASK: u8 = 0xEF;
 
+    /// Serializes a [`SonyMDRPacket`] into a framed, escaped byte sequence.
     pub fn encode(packet: &SonyMDRPacket) -> Vec<u8> {
         let length = packet.payload.len() as u32;
         let mut body = Vec::with_capacity(7 + packet.payload.len());
@@ -46,7 +80,8 @@ impl SonyMDRFraming {
         let mut encoded = Vec::with_capacity(body.len() + 2);
         encoded.push(Self::START_MARKER);
         for byte in body {
-            if byte == Self::START_MARKER || byte == Self::END_MARKER || byte == Self::ESCAPE_MARKER {
+            if byte == Self::START_MARKER || byte == Self::END_MARKER || byte == Self::ESCAPE_MARKER
+            {
                 encoded.push(Self::ESCAPE_MARKER);
                 encoded.push(byte & Self::ESCAPE_MASK);
             } else {
@@ -58,6 +93,10 @@ impl SonyMDRFraming {
     }
 }
 
+/// Streaming parser for Sony MDR frames.
+///
+/// Handles chunked socket reads, unescaping bytes, validating wrapping 8-bit checksums,
+/// and re-synchronizing upon malformed or oversized frames.
 pub struct SonyMDRFrameParser {
     state: ParserState,
     body: Vec<u8>,
@@ -72,12 +111,15 @@ enum ParserState {
 }
 
 impl SonyMDRFrameParser {
+    /// Default maximum acceptable payload length (1 MiB) to guard against unbounded allocation on corrupted headers.
     pub const DEFAULT_MAX_PAYLOAD_LENGTH: usize = 1_048_576;
 
+    /// Creates a new frame parser with default buffer limits.
     pub fn new() -> Self {
         Self::with_max_payload(Self::DEFAULT_MAX_PAYLOAD_LENGTH)
     }
 
+    /// Creates a new frame parser with a custom maximum payload length.
     pub fn with_max_payload(max_payload_len: usize) -> Self {
         Self {
             state: ParserState::WaitingForStart,
@@ -87,12 +129,14 @@ impl SonyMDRFrameParser {
         }
     }
 
+    /// Resets the internal parser state.
     pub fn reset(&mut self) {
         self.state = ParserState::WaitingForStart;
         self.body.clear();
         self.is_escaped = false;
     }
 
+    /// Appends incoming socket data and returns all complete, valid packets parsed.
     pub fn append(&mut self, data: &[u8]) -> Vec<SonyMDRPacket> {
         let mut packets = Vec::new();
 
@@ -107,26 +151,29 @@ impl SonyMDRFrameParser {
                 }
                 ParserState::ReadingBody => {
                     if self.is_escaped {
-                        self.body.push(byte | 0x10);
+                        self.body.push(byte | (!SonyMDRFraming::ESCAPE_MASK));
                         self.is_escaped = false;
                     } else if byte == SonyMDRFraming::ESCAPE_MARKER {
                         self.is_escaped = true;
+                    } else if byte == SonyMDRFraming::START_MARKER {
+                        // Re-sync: restart packet reading
+                        self.body.clear();
+                        self.is_escaped = false;
                     } else if byte == SonyMDRFraming::END_MARKER {
-                        if let Some(packet) = Self::decode_body(&self.body, self.max_payload_len) {
-                            packets.push(packet);
+                        // Finished reading body: parse packet
+                        if let Some(pkt) = self.parse_body() {
+                            packets.push(pkt);
                         }
                         self.state = ParserState::WaitingForStart;
-                        self.body.clear();
-                    } else if byte == SonyMDRFraming::START_MARKER {
-                        // Resynchronization point after corrupt stream
                         self.body.clear();
                         self.is_escaped = false;
                     } else {
                         self.body.push(byte);
-                    }
-
-                    if self.body.len() > self.max_payload_len + 7 {
-                        self.reset();
+                        // Prevent unbounded buffer allocation on corrupted stream without end markers
+                        let max_body_len = self.max_payload_len.saturating_add(7);
+                        if self.body.len() > max_body_len {
+                            self.reset();
+                        }
                     }
                 }
             }
@@ -135,32 +182,40 @@ impl SonyMDRFrameParser {
         packets
     }
 
-    fn decode_body(body: &[u8], max_len: usize) -> Option<SonyMDRPacket> {
-        if body.len() < 7 {
-            return None;
-        }
-        let length = ((body[2] as u32) << 24)
-            | ((body[3] as u32) << 16)
-            | ((body[4] as u32) << 8)
-            | (body[5] as u32);
-        let len_usize = length as usize;
-        if len_usize > max_len || body.len() != len_usize + 7 {
+    fn parse_body(&self) -> Option<SonyMDRPacket> {
+        // Body format: [data_type, sequence, len_b3, len_b2, len_b1, len_b0, ...payload..., checksum]
+        if self.body.len() < 7 {
             return None;
         }
 
-        let checksum_idx = 6 + len_usize;
-        let expected_checksum = body[..checksum_idx]
+        let checksum_idx = self.body.len() - 1;
+        let expected_checksum = self.body[checksum_idx];
+        let computed_checksum = self.body[..checksum_idx]
             .iter()
             .fold(0u8, |acc, &b| acc.wrapping_add(b));
-        if body[checksum_idx] != expected_checksum {
+
+        if expected_checksum != computed_checksum {
             return None;
         }
 
-        Some(SonyMDRPacket {
-            data_type: body[0],
-            sequence: body[1],
-            payload: body[6..checksum_idx].to_vec(),
-        })
+        let data_type = self.body[0];
+        let sequence = self.body[1];
+        let payload_len = ((self.body[2] as usize) << 24)
+            | ((self.body[3] as usize) << 16)
+            | ((self.body[4] as usize) << 8)
+            | (self.body[5] as usize);
+
+        if payload_len > self.max_payload_len {
+            return None;
+        }
+
+        let actual_payload_len = self.body.len() - 7;
+        if payload_len != actual_payload_len {
+            return None;
+        }
+
+        let payload = self.body[6..6 + payload_len].to_vec();
+        Some(SonyMDRPacket::new(data_type, sequence, payload))
     }
 }
 
@@ -170,61 +225,75 @@ impl Default for SonyMDRFrameParser {
     }
 }
 
+/// Sony MDR V1 operation codes for audio processing, ANC, EQ, and device status.
 pub struct SonyV1Opcode;
 
 impl SonyV1Opcode {
-    pub const INIT_GET: u8 = 0x00;
-    pub const INIT_RETURN: u8 = 0x01;
-    pub const MODEL_GET: u8 = 0x04;
-    pub const MODEL_RETURN: u8 = 0x05;
-    pub const BATTERY_GET: u8 = 0x10;
-    pub const BATTERY_RETURN: u8 = 0x11;
-    pub const BATTERY_NOTIFY: u8 = 0x13;
-    pub const CODEC_GET: u8 = 0x18;
-    pub const CODEC_RETURN: u8 = 0x19;
-    pub const CODEC_NOTIFY: u8 = 0x1B;
-    pub const EQUALIZER_GET: u8 = 0x56;
-    pub const EQUALIZER_RETURN: u8 = 0x57;
-    pub const EQUALIZER_SET: u8 = 0x58;
-    pub const EQUALIZER_NOTIFY: u8 = 0x59;
-    pub const NOISE_CAPABILITY_GET: u8 = 0x60;
-    pub const NOISE_CAPABILITY_RETURN: u8 = 0x61;
-    pub const NOISE_GET: u8 = 0x66;
-    pub const NOISE_RETURN: u8 = 0x67;
-    pub const NOISE_SET: u8 = 0x68;
-    pub const NOISE_NOTIFY: u8 = 0x69;
-    pub const OPTIMIZER_START: u8 = 0x84;
-    pub const OPTIMIZER_STATUS: u8 = 0x85;
-    pub const OPTIMIZER_STATE_GET: u8 = 0x86;
-    pub const OPTIMIZER_STATE_RETURN: u8 = 0x87;
+    /// Noise cancellation / Ambient sound control set.
+    pub const NC_ASM_SET: u8 = 0x22;
+    /// NC/ASM state notification.
+    pub const NC_ASM_NOTIFY: u8 = 0x23;
+    /// Equalizer setting write.
+    pub const EQUALIZER_SET: u8 = 0x68;
+    /// Equalizer setting notification.
+    pub const EQUALIZER_NOTIFY: u8 = 0x69;
+    /// Battery and power status query.
+    pub const BATTERY_GET: u8 = 0x16;
+    /// Battery status reply.
+    pub const BATTERY_RETURN: u8 = 0x17;
+    /// Optimizer calibration start/stop.
+    pub const OPTIMIZER_START: u8 = 0x88;
+    /// Optimizer calibration status notification.
     pub const OPTIMIZER_STATE_NOTIFY: u8 = 0x89;
+    /// Playback status query.
     pub const PLAYBACK_GET: u8 = 0xA6;
+    /// Playback status reply.
     pub const PLAYBACK_RETURN: u8 = 0xA7;
+    /// Playback control set.
     pub const PLAYBACK_SET: u8 = 0xA8;
+    /// Playback status notification.
     pub const PLAYBACK_NOTIFY: u8 = 0xA9;
+    /// Touch sensor panel query.
     pub const TOUCH_SENSOR_GET: u8 = 0xD6;
+    /// Touch sensor panel reply.
     pub const TOUCH_SENSOR_RETURN: u8 = 0xD7;
+    /// Touch sensor panel configuration set.
     pub const TOUCH_SENSOR_SET: u8 = 0xD8;
+    /// Touch sensor panel notification.
     pub const TOUCH_SENSOR_NOTIFY: u8 = 0xD9;
+    /// Audio setting query (e.g. DSEE).
     pub const AUDIO_SETTING_GET: u8 = 0xE6;
+    /// Audio setting reply.
     pub const AUDIO_SETTING_RETURN: u8 = 0xE7;
+    /// Audio setting configuration set.
     pub const AUDIO_SETTING_SET: u8 = 0xE8;
+    /// Audio setting notification.
     pub const AUDIO_SETTING_NOTIFY: u8 = 0xE9;
+    /// System setting query (e.g. Auto-Power Off).
     pub const SYSTEM_SETTING_GET: u8 = 0xF6;
+    /// System setting reply.
     pub const SYSTEM_SETTING_RETURN: u8 = 0xF7;
+    /// System setting configuration set.
     pub const SYSTEM_SETTING_SET: u8 = 0xF8;
+    /// System setting notification.
     pub const SYSTEM_SETTING_NOTIFY: u8 = 0xF9;
 }
 
+/// Decoded noise cancellation and ambient sound modes for Sony headphones.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SonyV1NoiseMode {
+    /// Noise cancellation and ambient sound processing disabled.
     Off,
+    /// Active Noise Cancellation enabled.
     NoiseCancellation,
+    /// Ambient Sound / Transparency mode enabled.
     Ambient,
+    /// Automatic wind noise reduction mode.
     WindReduction,
 }
 
 impl SonyV1NoiseMode {
+    /// Decodes raw Sony telemetry parameters into a [`SonyV1NoiseMode`].
     pub fn decode(effect: u8, nc_setting_type: u8, nc_val: u8, ambient_level: i32) -> Self {
         if effect == 0x00 {
             return Self::Off;
@@ -242,24 +311,38 @@ impl SonyV1NoiseMode {
     }
 }
 
+/// Built-in and user equalizer presets for Sony headphones.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum SonyV1EqualizerPreset {
+    /// Equalizer turned off (flat response).
     Off = 0x00,
+    /// Bright preset emphasizing highs.
     Bright = 0x10,
+    /// Excited preset with V-shaped curve.
     Excited = 0x11,
+    /// Mellow preset with rolled-off highs.
     Mellow = 0x12,
+    /// Relaxed preset with gentle mids.
     Relaxed = 0x13,
+    /// Vocal preset emphasizing vocal clarity.
     Vocal = 0x14,
+    /// Treble boost preset.
     TrebleBoost = 0x15,
+    /// Bass boost preset.
     BassBoost = 0x16,
+    /// Speech preset tailored for podcasts and calls.
     Speech = 0x17,
+    /// Manual custom EQ curve.
     Manual = 0xA0,
+    /// User Custom Preset 1.
     Custom1 = 0xA1,
+    /// User Custom Preset 2.
     Custom2 = 0xA2,
 }
 
 impl SonyV1EqualizerPreset {
+    /// Converts a raw byte to a [`SonyV1EqualizerPreset`] variant if valid.
     pub fn from_u8(val: u8) -> Option<Self> {
         match val {
             0x00 => Some(Self::Off),
@@ -278,6 +361,7 @@ impl SonyV1EqualizerPreset {
         }
     }
 
+    /// Returns the human-readable display title for this preset.
     pub fn title(&self) -> &'static str {
         match self {
             Self::Off => "Off",
@@ -296,16 +380,23 @@ impl SonyV1EqualizerPreset {
     }
 }
 
+/// Standby and automatic power-off timeout modes for Sony headphones.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SonyV1AutomaticPowerOff {
+    /// Never turn off automatically.
     Off,
+    /// Power off after 5 minutes of inactivity.
     After5Minutes,
+    /// Power off after 30 minutes of inactivity.
     After30Minutes,
+    /// Power off after 1 hour of inactivity.
     After1Hour,
+    /// Power off after 3 hours of inactivity.
     After3Hours,
 }
 
 impl SonyV1AutomaticPowerOff {
+    /// Returns the two-byte code representing this mode.
     pub fn code(&self) -> (u8, u8) {
         match self {
             Self::Off => (0x11, 0x00),
@@ -316,6 +407,7 @@ impl SonyV1AutomaticPowerOff {
         }
     }
 
+    /// Converts raw byte pairs into a [`SonyV1AutomaticPowerOff`] variant.
     pub fn from_codes(first: u8, second: u8) -> Option<Self> {
         match (first, second) {
             (0x11, 0x00) => Some(Self::Off),
@@ -327,6 +419,7 @@ impl SonyV1AutomaticPowerOff {
         }
     }
 
+    /// Returns the human-readable display title for this power-off mode.
     pub fn title(&self) -> &'static str {
         match self {
             Self::Off => "Off",
@@ -338,14 +431,18 @@ impl SonyV1AutomaticPowerOff {
     }
 }
 
+/// Payload builders for generating Sony V1 command byte sequences.
 pub struct SonyV1Payloads;
 
 impl SonyV1Payloads {
+    /// Builds payload to set an equalizer preset.
     pub fn equalizer_preset(preset: SonyV1EqualizerPreset) -> Vec<u8> {
         vec![SonyV1Opcode::EQUALIZER_SET, 0x01, preset as u8, 0x00]
     }
 
-    /// UI order is 400 Hz, 1 kHz, 2.5 kHz, 6.3 kHz, 16 kHz, Clear Bass (-10 to +10).
+    /// Builds payload to configure individual equalizer frequency bands.
+    ///
+    /// Frequency bands are: 400 Hz, 1 kHz, 2.5 kHz, 6.3 kHz, 16 kHz, and Clear Bass (-10 to +10 dB).
     pub fn equalizer_bands(values: &[i32]) -> Vec<u8> {
         let mut bands = [0i32; 6];
         for (i, &v) in values.iter().take(6).enumerate() {
@@ -369,6 +466,7 @@ impl SonyV1Payloads {
         ]
     }
 
+    /// Builds payload to enable or disable DSEE Extreme audio upscaling.
     pub fn dsee(enabled: bool) -> Vec<u8> {
         vec![
             SonyV1Opcode::AUDIO_SETTING_SET,
@@ -378,6 +476,7 @@ impl SonyV1Payloads {
         ]
     }
 
+    /// Builds payload to enable or disable the touch sensor control panel.
     pub fn touch_sensor(enabled: bool, slot: u8) -> Vec<u8> {
         vec![
             SonyV1Opcode::TOUCH_SENSOR_SET,
@@ -387,6 +486,7 @@ impl SonyV1Payloads {
         ]
     }
 
+    /// Builds payload to start or cancel NC optimizer / atmospheric pressure calibration.
     pub fn optimizer(start: bool) -> Vec<u8> {
         vec![
             SonyV1Opcode::OPTIMIZER_START,
@@ -396,6 +496,7 @@ impl SonyV1Payloads {
         ]
     }
 
+    /// Builds payload to configure automatic power-off timeout.
     pub fn automatic_power_off(mode: SonyV1AutomaticPowerOff) -> Vec<u8> {
         let (c0, c1) = mode.code();
         vec![SonyV1Opcode::SYSTEM_SETTING_SET, 0x04, 0x01, c0, c1]
@@ -455,22 +556,18 @@ mod tests {
 
     #[test]
     fn test_sony_noise_mode_decode() {
-        // Off
         assert_eq!(
-            SonyV1NoiseMode::decode(0x00, 0x00, 0x00, 0),
+            SonyV1NoiseMode::decode(0x00, 0x01, 0x00, 0),
             SonyV1NoiseMode::Off
         );
-        // ANC
-        assert_eq!(
-            SonyV1NoiseMode::decode(0x01, 0x01, 0x02, 0),
-            SonyV1NoiseMode::NoiseCancellation
-        );
-        // Wind
         assert_eq!(
             SonyV1NoiseMode::decode(0x01, 0x02, 0x01, 0),
             SonyV1NoiseMode::WindReduction
         );
-        // Ambient
+        assert_eq!(
+            SonyV1NoiseMode::decode(0x01, 0x01, 0x02, 0),
+            SonyV1NoiseMode::NoiseCancellation
+        );
         assert_eq!(
             SonyV1NoiseMode::decode(0x01, 0x01, 0x00, 10),
             SonyV1NoiseMode::Ambient
@@ -479,16 +576,23 @@ mod tests {
 
     #[test]
     fn test_sony_equalizer_bands_encoder() {
-        // Bands: 400Hz=2, 1kHz=-3, 2.5kHz=0, 6.3kHz=5, 16kHz=10, ClearBass=8
-        let bands = vec![2, -3, 0, 5, 10, 8];
+        let bands = vec![0, 2, -5, 10, -10, 3];
         let payload = SonyV1Payloads::equalizer_bands(&bands);
-        assert_eq!(payload.len(), 10);
         assert_eq!(payload[0], SonyV1Opcode::EQUALIZER_SET);
         assert_eq!(payload[1], 0x01);
         assert_eq!(payload[2], 0xFF);
         assert_eq!(payload[3], 0x06);
-        assert_eq!(payload[4], 18); // Clear Bass = 8 + 10 = 18
-        assert_eq!(payload[5], 12); // 400Hz = 2 + 10 = 12
-        assert_eq!(payload[6], 7);  // 1kHz = -3 + 10 = 7
+        // Clear Bass is index 5 (+3 normalized to 13)
+        assert_eq!(payload[4], 13);
+        // 400Hz (0 normalized to 10)
+        assert_eq!(payload[5], 10);
+        // 1kHz (+2 normalized to 12)
+        assert_eq!(payload[6], 12);
+        // 2.5kHz (-5 normalized to 5)
+        assert_eq!(payload[7], 5);
+        // 6.3kHz (+10 normalized to 20)
+        assert_eq!(payload[8], 20);
+        // 16kHz (-10 normalized to 0)
+        assert_eq!(payload[9], 0);
     }
 }

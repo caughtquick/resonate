@@ -1,16 +1,27 @@
-use std::collections::HashMap;
+//! BlueZ Bluetooth device inventory discovery and vendor heuristics.
+//!
+//! Interacts with BlueZ's standard `org.bluez.Device1` interfaces via D-Bus ObjectManager
+//! to discover paired devices, extract hardware modalias strings, identify device manufacturers
+//! (Apple, Sony, Bowers & Wilkins), and report initial battery levels.
+
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use zbus::Connection;
 use zbus::fdo::ObjectManagerProxy;
 use zbus::zvariant::OwnedValue;
 
 use crate::protocols::apple_models::AppleModel;
 
+/// Recognized hardware manufacturers supported by Resonate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DeviceVendor {
+    /// Apple Inc. (AirPods and Beats devices).
     Apple,
+    /// Bowers & Wilkins (Px / Pi series).
     BowersWilkins,
+    /// Sony Corporation (WH / WF / MDR / LinkBuds series).
     Sony,
+    /// Unidentified or unsupported Bluetooth device.
     Unknown,
 }
 
@@ -25,29 +36,46 @@ impl std::fmt::Display for DeviceVendor {
     }
 }
 
+/// A paired Bluetooth device discovered via BlueZ.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PairedDevice {
+    /// Normalized Bluetooth MAC address (e.g. `"6C:12:70:3F:8E:AE"`).
     pub address: String,
+    /// Device friendly name or alias.
     pub name: String,
+    /// Whether the device is paired in BlueZ.
     pub paired: bool,
+    /// Whether the device currently has an active Bluetooth connection.
     pub connected: bool,
+    /// Modalias string providing vendor/product IDs (e.g. `"bluetooth:v004Cp2024d0600"`).
     pub modalias: Option<String>,
+    /// Advertised Bluetooth Service UUIDs.
     pub uuids: Vec<String>,
+    /// Identified manufacturer vendor category.
     pub vendor: DeviceVendor,
+    /// Resolved model name (e.g. `"AirPods Pro (2nd gen)"`).
     pub model_name: Option<String>,
+    /// Battery percentage reported via BlueZ `org.bluez.Battery1` if available.
     pub battery_percent: Option<u8>,
 }
 
 impl PairedDevice {
+    /// Returns true if this device is recognized as Apple, Sony, or Bowers & Wilkins.
     pub fn is_supported(&self) -> bool {
         self.vendor != DeviceVendor::Unknown
     }
 }
 
+/// Inventory scanner querying BlueZ over system D-Bus.
 pub struct BluetoothInventory;
 
 impl BluetoothInventory {
-    pub async fn fetch_paired_devices() -> Result<Vec<PairedDevice>, Box<dyn std::error::Error + Send + Sync>> {
+    /// Queries BlueZ for all paired devices and classifies them by vendor and model.
+    ///
+    /// Returns a list of [`PairedDevice`] entries, sorted with connected devices first,
+    /// supported devices second, and then alphabetically by name.
+    pub async fn fetch_paired_devices()
+    -> Result<Vec<PairedDevice>, Box<dyn std::error::Error + Send + Sync>> {
         let conn = Connection::system().await?;
         let proxy = ObjectManagerProxy::builder(&conn)
             .destination("org.bluez")?
@@ -80,9 +108,10 @@ impl BluetoothInventory {
 
                 let mut battery_percent = None;
                 if let Some(batt_props) = interfaces.get("org.bluez.Battery1")
-                    && let Some(p) = get_u8_prop(batt_props, "Percentage") {
-                        battery_percent = Some(p);
-                    }
+                    && let Some(p) = get_u8_prop(batt_props, "Percentage")
+                {
+                    battery_percent = Some(p);
+                }
 
                 let vendor = identify_vendor(&name, modalias.as_deref(), &uuids);
                 let mut model_name = None;
@@ -129,6 +158,7 @@ impl BluetoothInventory {
     }
 }
 
+/// Identifies the device vendor based on device name, modalias VID, and advertised service UUIDs.
 pub fn identify_vendor(name: &str, modalias: Option<&str>, uuids: &[String]) -> DeviceVendor {
     let lower_name = name.to_lowercase();
     let lower_modalias = modalias.map(|m| m.to_lowercase()).unwrap_or_default();
@@ -140,7 +170,9 @@ pub fn identify_vendor(name: &str, modalias: Option<&str>, uuids: &[String]) -> 
     }
     // Apple Accessory UUID
     for u in uuids {
-        if u.to_lowercase().contains("74ec2172-0bad-4d01-8f77-99e2b2e07755") {
+        if u.to_lowercase()
+            .contains("74ec2172-0bad-4d01-8f77-99e2b2e07755")
+        {
             return DeviceVendor::Apple;
         }
     }
@@ -176,7 +208,9 @@ pub fn identify_vendor(name: &str, modalias: Option<&str>, uuids: &[String]) -> 
         return DeviceVendor::Sony;
     }
     for u in uuids {
-        if u.to_lowercase().contains("96e42634-4390-4e9b-b09d-00c7716a3b37") {
+        if u.to_lowercase()
+            .contains("96e42634-4390-4e9b-b09d-00c7716a3b37")
+        {
             return DeviceVendor::Sony;
         }
     }
@@ -200,22 +234,22 @@ fn get_string_prop(props: &HashMap<String, OwnedValue>, key: &str) -> Option<Str
 
 fn get_bool_prop(props: &HashMap<String, OwnedValue>, key: &str) -> Option<bool> {
     props.get(key).and_then(|v| {
-        let b_val: Result<bool, _> = v.try_into();
-        b_val.ok()
+        let b_res: Result<bool, _> = v.try_into();
+        b_res.ok()
     })
 }
 
 fn get_u8_prop(props: &HashMap<String, OwnedValue>, key: &str) -> Option<u8> {
     props.get(key).and_then(|v| {
-        let u_val: Result<u8, _> = v.try_into();
-        u_val.ok()
+        let b_res: Result<u8, _> = v.try_into();
+        b_res.ok()
     })
 }
 
 fn get_string_vec_prop(props: &HashMap<String, OwnedValue>, key: &str) -> Option<Vec<String>> {
-    props.get(key).and_then(|v| {
-        <Vec<String>>::try_from(v.clone()).ok()
-    })
+    props
+        .get(key)
+        .and_then(|v| <Vec<String>>::try_from(v.clone()).ok())
 }
 
 #[cfg(test)]
@@ -224,15 +258,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_fetch_paired_devices_on_system() {
-        if let Ok(devs) = BluetoothInventory::fetch_paired_devices().await {
-            println!("Discovered {} paired devices:", devs.len());
-            for d in devs {
+        if let Ok(devices) = BluetoothInventory::fetch_paired_devices().await {
+            println!("Discovered {} paired devices via BlueZ:", devices.len());
+            for d in devices {
                 println!(
-                    " - [{}] {} ({:?}) - Connected: {}",
-                    d.address, d.name, d.vendor, d.connected
+                    " - {} [{}] Vendor: {} Supported: {} Connected: {}",
+                    d.name,
+                    d.address,
+                    d.vendor,
+                    d.is_supported(),
+                    d.connected
                 );
             }
+        } else {
+            println!("BlueZ D-Bus daemon not available or no adapter active in test environment.");
         }
     }
 }
-

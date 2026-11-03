@@ -1,8 +1,18 @@
+//! Main executable entrypoint for the `resonate` CLI and background daemon.
+//!
+//! Handles command-line dispatch:
+//! - When invoked as `resonate daemon`, starts the long-running background daemon,
+//!   registers session D-Bus interface `org.headbridge.Manager`, and begins device monitoring.
+//! - When invoked with management subcommands (`resonate daemon start/stop/status/install/uninstall`),
+//!   controls the user systemd service.
+//! - When invoked with user commands (`resonate status`, `resonate anc`, `resonate watch`, etc.),
+//!   connects to the running daemon over D-Bus to query telemetry or execute controls.
+
+use clap::{CommandFactory, Parser};
+use clap_complete::{Shell, generate};
+use futures_lite::stream::StreamExt;
 use std::io::Write;
 use std::sync::Arc;
-use clap::{CommandFactory, Parser};
-use clap_complete::{generate, Shell};
-use futures_lite::stream::StreamExt;
 use tokio::sync::RwLock;
 
 use resonate::cli::{Cli, Commands};
@@ -74,7 +84,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         };
 
                         let service_content = format!(
-r#"[Unit]
+                            r#"[Unit]
 Description=Resonate Bluetooth Headphone Daemon
 After=bluetooth.target sound.target
 
@@ -86,14 +96,21 @@ RestartSec=3
 
 [Install]
 WantedBy=default.target
-"#, exec_target);
+"#,
+                            exec_target
+                        );
 
-                        let user_systemd_dir = resonate::settings::dirs_config_dir().join("systemd").join("user");
+                        let user_systemd_dir = resonate::settings::dirs_config_dir()
+                            .join("systemd")
+                            .join("user");
                         let _ = std::fs::create_dir_all(&user_systemd_dir);
                         let service_file = user_systemd_dir.join("resonate.service");
                         match std::fs::write(&service_file, service_content) {
                             Ok(_) => {
-                                println!("Systemd user service installed to: {}", service_file.display());
+                                println!(
+                                    "Systemd user service installed to: {}",
+                                    service_file.display()
+                                );
                                 println!("Enabling and starting service via systemctl --user...");
                                 let _ = std::process::Command::new("systemctl")
                                     .args(["--user", "daemon-reload"])
@@ -101,7 +118,9 @@ WantedBy=default.target
                                 let _ = std::process::Command::new("systemctl")
                                     .args(["--user", "enable", "--now", "resonate.service"])
                                     .status();
-                                println!("Resonate daemon is now installed and managed by systemd!");
+                                println!(
+                                    "Resonate daemon is now installed and managed by systemd!"
+                                );
                             }
                             Err(e) => eprintln!("Failed to write systemd service file: {}", e),
                         }
@@ -112,7 +131,10 @@ WantedBy=default.target
                         let _ = std::process::Command::new("systemctl")
                             .args(["--user", "disable", "--now", "resonate.service"])
                             .status();
-                        let service_file = resonate::settings::dirs_config_dir().join("systemd").join("user").join("resonate.service");
+                        let service_file = resonate::settings::dirs_config_dir()
+                            .join("systemd")
+                            .join("user")
+                            .join("resonate.service");
                         if service_file.exists() {
                             let _ = std::fs::remove_file(&service_file);
                         }
@@ -140,7 +162,10 @@ WantedBy=default.target
                 ..Default::default()
             }));
 
-            let device_mgr = Arc::new(DeviceManager::new(state.clone(), tokio::runtime::Handle::current()));
+            let device_mgr = Arc::new(DeviceManager::new(
+                state.clone(),
+                tokio::runtime::Handle::current(),
+            ));
             let dbus_mgr = ResonateDbusManager::new(device_mgr.clone());
 
             let _conn = zbus::connection::Builder::session()?
@@ -152,7 +177,9 @@ WantedBy=default.target
 
             device_mgr.set_dbus_connection(_conn.clone()).await;
 
-            println!("Resonate D-Bus services registered: org.headbridge & org.resonate on /org/headbridge");
+            println!(
+                "Resonate D-Bus services registered: org.headbridge & org.resonate on /org/headbridge"
+            );
             println!("Monitoring BlueZ device connections...");
 
             // Spawn auto-connect and monitoring loop
@@ -176,7 +203,9 @@ WantedBy=default.target
                 "org.headbridge",
                 "/org/headbridge",
                 "org.headbridge.Manager",
-            ).await {
+            )
+            .await
+            {
                 Ok(p) => p,
                 Err(e) => {
                     eprintln!("Failed to connect to Resonate D-Bus interface: {}", e);
@@ -214,23 +243,32 @@ WantedBy=default.target
                     "org.headbridge",
                     "/org/headbridge",
                     "org.headbridge.Manager",
-                ).await {
-                    let res: Result<String, _> = proxy.call("ListDevices", &()).await;
-                    if let Ok(json_str) = res
-                        && json_str != "[]" {
-                            output_json = Some(json_str);
-                        }
+                )
+                .await
+            {
+                let res: Result<String, _> = proxy.call("ListDevices", &()).await;
+                if let Ok(json_str) = res
+                    && json_str != "[]"
+                {
+                    output_json = Some(json_str);
                 }
+            }
 
             // Direct BlueZ discovery fallback if daemon not active or returned empty
             let devices = if let Some(j) = output_json {
-                serde_json::from_str::<Vec<resonate::inventory::PairedDevice>>(&j).unwrap_or_default()
+                serde_json::from_str::<Vec<resonate::inventory::PairedDevice>>(&j)
+                    .unwrap_or_default()
             } else {
-                BluetoothInventory::fetch_paired_devices().await.unwrap_or_default()
+                BluetoothInventory::fetch_paired_devices()
+                    .await
+                    .unwrap_or_default()
             };
 
             if cli.json {
-                println!("{}", serde_json::to_string_pretty(&devices).unwrap_or_else(|_| "[]".to_string()));
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&devices).unwrap_or_else(|_| "[]".to_string())
+                );
             } else {
                 println!("=== Paired Bluetooth Headphones ===");
                 let supported: Vec<_> = devices.iter().filter(|d| d.is_supported()).collect();
@@ -244,10 +282,7 @@ WantedBy=default.target
                         } else {
                             "[Not connected]"
                         };
-                        println!(
-                            " - {} ({}) - {} {}",
-                            d.name, d.address, d.vendor, conn_tag
-                        );
+                        println!(" - {} ({}) - {} {}", d.name, d.address, d.vendor, conn_tag);
                     }
                 }
             }
@@ -267,10 +302,15 @@ WantedBy=default.target
                 "org.headbridge",
                 "/org/headbridge",
                 "org.headbridge.Manager",
-            ).await {
+            )
+            .await
+            {
                 Ok(p) => p,
                 Err(e) => {
-                    eprintln!("Resonate daemon is not running. Please start it with 'resonate daemon'. Error: {}", e);
+                    eprintln!(
+                        "Resonate daemon is not running. Please start it with 'resonate daemon'. Error: {}",
+                        e
+                    );
                     std::process::exit(1);
                 }
             };
@@ -279,7 +319,9 @@ WantedBy=default.target
                 Some(t) => t,
                 None => {
                     // Default to first supported device
-                    let devs = BluetoothInventory::fetch_paired_devices().await.unwrap_or_default();
+                    let devs = BluetoothInventory::fetch_paired_devices()
+                        .await
+                        .unwrap_or_default();
                     if let Some(d) = devs.into_iter().find(|d| d.is_supported()) {
                         d.address
                     } else {
@@ -313,17 +355,19 @@ WantedBy=default.target
                     "org.headbridge",
                     "/org/headbridge",
                     "org.headbridge.Manager",
-                ).await {
-                    let res: Result<bool, _> = proxy.call("Disconnect", &()).await;
-                    if let Ok(true) = res {
-                        if cli.json {
-                            println!("{{\"disconnected\":true}}");
-                        } else {
-                            println!("Disconnected active session.");
-                        }
-                        return Ok(());
+                )
+                .await
+            {
+                let res: Result<bool, _> = proxy.call("Disconnect", &()).await;
+                if let Ok(true) = res {
+                    if cli.json {
+                        println!("{{\"disconnected\":true}}");
+                    } else {
+                        println!("Disconnected active session.");
                     }
+                    return Ok(());
                 }
+            }
             eprintln!("Resonate daemon is not running or failed to disconnect.");
         }
 
@@ -334,62 +378,92 @@ WantedBy=default.target
                     "org.headbridge",
                     "/org/headbridge",
                     "org.headbridge.Manager",
-                ).await {
-                    let status_res: Result<String, _> = proxy.call("GetStatus", &()).await;
-                    if let Ok(status) = status_res {
-                        if cli.json {
-                            println!("{}", status);
-                        } else {
-                            println!("=== Resonate Status ===");
-                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&status) {
-                                if val["connected"].as_bool().unwrap_or(false) {
-                                    println!("Device:      {}", val["deviceName"].as_str().unwrap_or(""));
-                                    println!("Vendor:      {}", val["vendor"].as_str().unwrap_or(""));
-                                    if let Some(pct) = val["batteryPercent"].as_i64() {
-                                        println!("Battery:     {}%", pct);
-                                    }
-                                    if let Some(left) = val["batteryLeft"].as_i64() {
-                                        println!("  Left Bud:  {}%", left);
-                                    }
-                                    if let Some(right) = val["batteryRight"].as_i64() {
-                                        println!("  Right Bud: {}%", right);
-                                    }
-                                    if let Some(case) = val["batteryCase"].as_i64() {
-                                        println!("  Case:      {}%", case);
-                                    }
-                                    println!("ANC Mode:    {}", val["noiseMode"].as_str().unwrap_or(""));
-                                    if let Some(in_ear) = val["inEar"].as_bool() {
-                                        println!("In-Ear:      {}", if in_ear { "Detected (wearing)" } else { "Not worn" });
-                                        let p = val["inEarPrimary"].as_str().unwrap_or("");
-                                        let s = val["inEarSecondary"].as_str().unwrap_or("");
-                                        if !p.is_empty() && !s.is_empty() {
-                                            println!("  Primary:   {}", p);
-                                            println!("  Secondary: {}", s);
+                )
+                .await
+            {
+                let status_res: Result<String, _> = proxy.call("GetStatus", &()).await;
+                if let Ok(status) = status_res {
+                    if cli.json {
+                        println!("{}", status);
+                    } else {
+                        println!("=== Resonate Status ===");
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&status) {
+                            if val["connected"].as_bool().unwrap_or(false) {
+                                println!(
+                                    "Device:      {}",
+                                    val["deviceName"].as_str().unwrap_or("")
+                                );
+                                println!("Vendor:      {}", val["vendor"].as_str().unwrap_or(""));
+                                if let Some(pct) = val["batteryPercent"].as_i64() {
+                                    println!("Battery:     {}%", pct);
+                                }
+                                if let Some(left) = val["batteryLeft"].as_i64() {
+                                    println!("  Left Bud:  {}%", left);
+                                }
+                                if let Some(right) = val["batteryRight"].as_i64() {
+                                    println!("  Right Bud: {}%", right);
+                                }
+                                if let Some(case) = val["batteryCase"].as_i64() {
+                                    println!("  Case:      {}%", case);
+                                }
+                                println!(
+                                    "ANC Mode:    {}",
+                                    val["noiseMode"].as_str().unwrap_or("")
+                                );
+                                if let Some(in_ear) = val["inEar"].as_bool() {
+                                    println!(
+                                        "In-Ear:      {}",
+                                        if in_ear {
+                                            "Detected (wearing)"
+                                        } else {
+                                            "Not worn"
                                         }
-                                    } else if let Some(ear) = val["earDetection"].as_bool() {
-                                        println!("In-Ear:      {}", if ear { "Detected (wearing)" } else { "Not worn" });
+                                    );
+                                    let p = val["inEarPrimary"].as_str().unwrap_or("");
+                                    let s = val["inEarSecondary"].as_str().unwrap_or("");
+                                    if !p.is_empty() && !s.is_empty() {
+                                        println!("  Primary:   {}", p);
+                                        println!("  Secondary: {}", s);
                                     }
-                                    if let Some(ap) = val["autoPause"].as_bool() {
-                                        println!("Auto-Pause:  {}", if ap { "Enabled" } else { "Disabled" });
-                                    }
-                                    if let Some(conv) = val["conversationAwareness"].as_bool() {
-                                        println!("Conv Aware:  {}", if conv { "Enabled" } else { "Disabled" });
-                                    }
-                                } else {
-                                    println!("No supported headphones currently connected.");
+                                } else if let Some(ear) = val["earDetection"].as_bool() {
+                                    println!(
+                                        "In-Ear:      {}",
+                                        if ear {
+                                            "Detected (wearing)"
+                                        } else {
+                                            "Not worn"
+                                        }
+                                    );
+                                }
+                                if let Some(ap) = val["autoPause"].as_bool() {
+                                    println!(
+                                        "Auto-Pause:  {}",
+                                        if ap { "Enabled" } else { "Disabled" }
+                                    );
+                                }
+                                if let Some(conv) = val["conversationAwareness"].as_bool() {
+                                    println!(
+                                        "Conv Aware:  {}",
+                                        if conv { "Enabled" } else { "Disabled" }
+                                    );
                                 }
                             } else {
-                                println!("{}", status);
+                                println!("No supported headphones currently connected.");
                             }
+                        } else {
+                            println!("{}", status);
                         }
-                        return Ok(());
                     }
+                    return Ok(());
                 }
+            }
 
             if cli.json {
                 println!(r#"{{"error":"Resonate daemon is not running","connected":false}}"#);
             } else {
-                eprintln!("Resonate daemon is not running. Please start it with 'resonate daemon'.");
+                eprintln!(
+                    "Resonate daemon is not running. Please start it with 'resonate daemon'."
+                );
             }
         }
 
@@ -400,35 +474,42 @@ WantedBy=default.target
                     "org.headbridge",
                     "/org/headbridge",
                     "org.headbridge.Manager",
-                ).await {
-                    let status_res: Result<String, _> = proxy.call("GetStatus", &()).await;
-                    if let Ok(status) = status_res
-                        && let Ok(val) = serde_json::from_str::<serde_json::Value>(&status) {
-                            if cli.json {
-                                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                                    "percent": val["batteryPercent"],
-                                    "left": val["batteryLeft"],
-                                    "right": val["batteryRight"],
-                                    "case": val["batteryCase"],
-                                    "charging": val["isCharging"]
-                                })).unwrap());
-                            } else {
-                                println!("=== Battery Telemetry ===");
-                                println!("Overall:  {}%", val["batteryPercent"]);
-                                if let Some(l) = val["batteryLeft"].as_i64() {
-                                    println!("Left:     {}%", l);
-                                }
-                                if let Some(r) = val["batteryRight"].as_i64() {
-                                    println!("Right:    {}%", r);
-                                }
-                                if let Some(c) = val["batteryCase"].as_i64() {
-                                    println!("Case:     {}%", c);
-                                }
-                                println!("Charging: {}", val["isCharging"]);
-                            }
-                            return Ok(());
+                )
+                .await
+            {
+                let status_res: Result<String, _> = proxy.call("GetStatus", &()).await;
+                if let Ok(status) = status_res
+                    && let Ok(val) = serde_json::from_str::<serde_json::Value>(&status)
+                {
+                    if cli.json {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&serde_json::json!({
+                                "percent": val["batteryPercent"],
+                                "left": val["batteryLeft"],
+                                "right": val["batteryRight"],
+                                "case": val["batteryCase"],
+                                "charging": val["isCharging"]
+                            }))
+                            .unwrap()
+                        );
+                    } else {
+                        println!("=== Battery Telemetry ===");
+                        println!("Overall:  {}%", val["batteryPercent"]);
+                        if let Some(l) = val["batteryLeft"].as_i64() {
+                            println!("Left:     {}%", l);
                         }
+                        if let Some(r) = val["batteryRight"].as_i64() {
+                            println!("Right:    {}%", r);
+                        }
+                        if let Some(c) = val["batteryCase"].as_i64() {
+                            println!("Case:     {}%", c);
+                        }
+                        println!("Charging: {}", val["isCharging"]);
+                    }
+                    return Ok(());
                 }
+            }
             eprintln!("Resonate daemon is not running.");
         }
 
@@ -439,40 +520,43 @@ WantedBy=default.target
                     "org.headbridge",
                     "/org/headbridge",
                     "org.headbridge.Manager",
-                ).await {
-                    let target_mode = match mode.as_deref() {
-                        Some("toggle") | None => {
-                            let status_res: Result<String, _> = proxy.call("GetStatus", &()).await;
-                            let current = match status_res {
-                                Ok(s) => {
-                                    let v: serde_json::Value = serde_json::from_str(&s).unwrap_or_default();
-                                    v["noiseMode"].as_str().unwrap_or("off").to_string()
-                                }
-                                Err(_) => "off".to_string(),
-                            };
-                            match current.as_str() {
-                                "anc" => "ambient".to_string(),
-                                "ambient" => "off".to_string(),
-                                _ => "anc".to_string(),
+                )
+                .await
+            {
+                let target_mode = match mode.as_deref() {
+                    Some("toggle") | None => {
+                        let status_res: Result<String, _> = proxy.call("GetStatus", &()).await;
+                        let current = match status_res {
+                            Ok(s) => {
+                                let v: serde_json::Value =
+                                    serde_json::from_str(&s).unwrap_or_default();
+                                v["noiseMode"].as_str().unwrap_or("off").to_string()
                             }
+                            Err(_) => "off".to_string(),
+                        };
+                        match current.as_str() {
+                            "anc" => "ambient".to_string(),
+                            "ambient" => "off".to_string(),
+                            _ => "anc".to_string(),
                         }
-                        Some(m) => m.to_string(),
-                    };
-
-                    let res: Result<(bool, String), _> = proxy.call("SetAnc", &(target_mode,)).await;
-                    match res {
-                        Ok((success, msg)) => {
-                            if success {
-                                println!("{}", msg);
-                            } else {
-                                eprintln!("{}", msg);
-                                std::process::exit(1);
-                            }
-                        }
-                        Err(e) => eprintln!("Failed to set ANC mode: {}", e),
                     }
-                    return Ok(());
+                    Some(m) => m.to_string(),
+                };
+
+                let res: Result<(bool, String), _> = proxy.call("SetAnc", &(target_mode,)).await;
+                match res {
+                    Ok((success, msg)) => {
+                        if success {
+                            println!("{}", msg);
+                        } else {
+                            eprintln!("{}", msg);
+                            std::process::exit(1);
+                        }
+                    }
+                    Err(e) => eprintln!("Failed to set ANC mode: {}", e),
                 }
+                return Ok(());
+            }
             eprintln!("Resonate daemon is not running.");
         }
 
@@ -483,20 +567,22 @@ WantedBy=default.target
                     "org.headbridge",
                     "/org/headbridge",
                     "org.headbridge.Manager",
-                ).await {
-                    let enable = match action.as_deref() {
-                        Some("on") | Some("enable") | Some("true") | Some("1") => true,
-                        Some("off") | Some("disable") | Some("false") | Some("0") => false,
-                        _ => true,
-                    };
-                    let res: Result<bool, _> = proxy.call("SetConversationAwareness", &(enable,)).await;
-                    if let Ok(true) = res {
-                        println!("Conversation Awareness set to: {}", enable);
-                    } else {
-                        eprintln!("Failed to set Conversation Awareness.");
-                    }
-                    return Ok(());
+                )
+                .await
+            {
+                let enable = match action.as_deref() {
+                    Some("on") | Some("enable") | Some("true") | Some("1") => true,
+                    Some("off") | Some("disable") | Some("false") | Some("0") => false,
+                    _ => true,
+                };
+                let res: Result<bool, _> = proxy.call("SetConversationAwareness", &(enable,)).await;
+                if let Ok(true) = res {
+                    println!("Conversation Awareness set to: {}", enable);
+                } else {
+                    eprintln!("Failed to set Conversation Awareness.");
                 }
+                return Ok(());
+            }
             eprintln!("Resonate daemon is not running.");
         }
 
@@ -507,20 +593,22 @@ WantedBy=default.target
                     "org.headbridge",
                     "/org/headbridge",
                     "org.headbridge.Manager",
-                ).await {
-                    let enable = match action.as_deref() {
-                        Some("on") | Some("enable") | Some("true") | Some("1") => true,
-                        Some("off") | Some("disable") | Some("false") | Some("0") => false,
-                        _ => true,
-                    };
-                    let res: Result<bool, _> = proxy.call("SetWearSensor", &(enable,)).await;
-                    if let Ok(true) = res {
-                        println!("Wear / in-ear detection set to: {}", enable);
-                    } else {
-                        eprintln!("Failed to set wear sensor.");
-                    }
-                    return Ok(());
+                )
+                .await
+            {
+                let enable = match action.as_deref() {
+                    Some("on") | Some("enable") | Some("true") | Some("1") => true,
+                    Some("off") | Some("disable") | Some("false") | Some("0") => false,
+                    _ => true,
+                };
+                let res: Result<bool, _> = proxy.call("SetWearSensor", &(enable,)).await;
+                if let Ok(true) = res {
+                    println!("Wear / in-ear detection set to: {}", enable);
+                } else {
+                    eprintln!("Failed to set wear sensor.");
                 }
+                return Ok(());
+            }
             eprintln!("Resonate daemon is not running.");
         }
 
@@ -531,31 +619,39 @@ WantedBy=default.target
                     "org.headbridge",
                     "/org/headbridge",
                     "org.headbridge.Manager",
-                ).await {
-                    if let Some(act) = action {
-                        let enable = match act.to_lowercase().as_str() {
-                            "on" | "enable" | "true" | "1" => true,
-                            "off" | "disable" | "false" | "0" => false,
-                            _ => {
-                                eprintln!("Invalid action '{}'. Use 'on' or 'off'.", act);
-                                return Ok(());
-                            }
-                        };
-                        let res: Result<bool, _> = proxy.call("SetAutoPause", &(enable,)).await;
-                        if let Ok(true) = res {
-                            println!("Smart auto-pause: {}", if enable { "Enabled" } else { "Disabled" });
-                        } else {
-                            eprintln!("Failed to set smart auto-pause.");
+                )
+                .await
+            {
+                if let Some(act) = action {
+                    let enable = match act.to_lowercase().as_str() {
+                        "on" | "enable" | "true" | "1" => true,
+                        "off" | "disable" | "false" | "0" => false,
+                        _ => {
+                            eprintln!("Invalid action '{}'. Use 'on' or 'off'.", act);
+                            return Ok(());
                         }
+                    };
+                    let res: Result<bool, _> = proxy.call("SetAutoPause", &(enable,)).await;
+                    if let Ok(true) = res {
+                        println!(
+                            "Smart auto-pause: {}",
+                            if enable { "Enabled" } else { "Disabled" }
+                        );
                     } else {
-                        let current: Result<bool, _> = proxy.get_property("AutoPause").await;
-                        match current {
-                            Ok(val) => println!("Smart auto-pause: {}", if val { "Enabled" } else { "Disabled" }),
-                            Err(e) => eprintln!("Failed to get auto-pause state: {}", e),
-                        }
+                        eprintln!("Failed to set smart auto-pause.");
                     }
-                    return Ok(());
+                } else {
+                    let current: Result<bool, _> = proxy.get_property("AutoPause").await;
+                    match current {
+                        Ok(val) => println!(
+                            "Smart auto-pause: {}",
+                            if val { "Enabled" } else { "Disabled" }
+                        ),
+                        Err(e) => eprintln!("Failed to get auto-pause state: {}", e),
+                    }
                 }
+                return Ok(());
+            }
 
             // Fallback when daemon is not running: read/write settings file directly
             let mut store = resonate::settings::SettingsStore::load();
@@ -589,16 +685,19 @@ WantedBy=default.target
                     "org.headbridge",
                     "/org/headbridge",
                     "org.headbridge.Manager",
-                ).await {
-                    let target = mode.unwrap_or_else(|| "auto".to_string());
-                    let res: Result<bool, _> = proxy.call("SetMicrophoneMode", &(target.clone(),)).await;
-                    if let Ok(true) = res {
-                        println!("Microphone routing set to: {}", target);
-                    } else {
-                        eprintln!("Failed to set microphone mode.");
-                    }
-                    return Ok(());
+                )
+                .await
+            {
+                let target = mode.unwrap_or_else(|| "auto".to_string());
+                let res: Result<bool, _> =
+                    proxy.call("SetMicrophoneMode", &(target.clone(),)).await;
+                if let Ok(true) = res {
+                    println!("Microphone routing set to: {}", target);
+                } else {
+                    eprintln!("Failed to set microphone mode.");
                 }
+                return Ok(());
+            }
             eprintln!("Resonate daemon is not running.");
         }
 
@@ -609,20 +708,22 @@ WantedBy=default.target
                     "org.headbridge",
                     "/org/headbridge",
                     "org.headbridge.Manager",
-                ).await {
-                    let enable = match action.as_deref() {
-                        Some("on") | Some("enable") | Some("true") | Some("1") => true,
-                        Some("off") | Some("disable") | Some("false") | Some("0") => false,
-                        _ => true,
-                    };
-                    let res: Result<bool, _> = proxy.call("SetOneBudAnc", &(enable,)).await;
-                    if let Ok(true) = res {
-                        println!("Single-bud ANC set to: {}", enable);
-                    } else {
-                        eprintln!("Failed to set single-bud ANC.");
-                    }
-                    return Ok(());
+                )
+                .await
+            {
+                let enable = match action.as_deref() {
+                    Some("on") | Some("enable") | Some("true") | Some("1") => true,
+                    Some("off") | Some("disable") | Some("false") | Some("0") => false,
+                    _ => true,
+                };
+                let res: Result<bool, _> = proxy.call("SetOneBudAnc", &(enable,)).await;
+                if let Ok(true) = res {
+                    println!("Single-bud ANC set to: {}", enable);
+                } else {
+                    eprintln!("Failed to set single-bud ANC.");
                 }
+                return Ok(());
+            }
             eprintln!("Resonate daemon is not running.");
         }
 
@@ -633,16 +734,18 @@ WantedBy=default.target
                     "org.headbridge",
                     "/org/headbridge",
                     "org.headbridge.Manager",
-                ).await {
-                    let vol = volume.unwrap_or(80);
-                    let res: Result<bool, _> = proxy.call("SetChimeVolume", &(vol,)).await;
-                    if let Ok(true) = res {
-                        println!("Chime tone volume set to: {}", vol);
-                    } else {
-                        eprintln!("Failed to set chime volume.");
-                    }
-                    return Ok(());
+                )
+                .await
+            {
+                let vol = volume.unwrap_or(80);
+                let res: Result<bool, _> = proxy.call("SetChimeVolume", &(vol,)).await;
+                if let Ok(true) = res {
+                    println!("Chime tone volume set to: {}", vol);
+                } else {
+                    eprintln!("Failed to set chime volume.");
                 }
+                return Ok(());
+            }
             eprintln!("Resonate daemon is not running.");
         }
 
@@ -653,16 +756,18 @@ WantedBy=default.target
                     "org.headbridge",
                     "/org/headbridge",
                     "org.headbridge.Manager",
-                ).await {
-                    let lvl = level.unwrap_or(10);
-                    let res: Result<bool, _> = proxy.call("SetAmbientLevel", &(lvl,)).await;
-                    if let Ok(true) = res {
-                        println!("Ambient sound level set to: {}", lvl);
-                    } else {
-                        eprintln!("Failed to set ambient level.");
-                    }
-                    return Ok(());
+                )
+                .await
+            {
+                let lvl = level.unwrap_or(10);
+                let res: Result<bool, _> = proxy.call("SetAmbientLevel", &(lvl,)).await;
+                if let Ok(true) = res {
+                    println!("Ambient sound level set to: {}", lvl);
+                } else {
+                    eprintln!("Failed to set ambient level.");
                 }
+                return Ok(());
+            }
             eprintln!("Resonate daemon is not running.");
         }
 
@@ -673,15 +778,17 @@ WantedBy=default.target
                     "org.headbridge",
                     "/org/headbridge",
                     "org.headbridge.Manager",
-                ).await {
-                    let arg_str = args.join(" ");
-                    let res: Result<(bool, String), _> = proxy.call("SetEqualizer", &(arg_str,)).await;
-                    match res {
-                        Ok((_, msg)) => println!("{}", msg),
-                        Err(e) => eprintln!("Equalizer call failed: {}", e),
-                    }
-                    return Ok(());
+                )
+                .await
+            {
+                let arg_str = args.join(" ");
+                let res: Result<(bool, String), _> = proxy.call("SetEqualizer", &(arg_str,)).await;
+                match res {
+                    Ok((_, msg)) => println!("{}", msg),
+                    Err(e) => eprintln!("Equalizer call failed: {}", e),
                 }
+                return Ok(());
+            }
             eprintln!("Resonate daemon is not running.");
         }
 
@@ -692,16 +799,18 @@ WantedBy=default.target
                     "org.headbridge",
                     "/org/headbridge",
                     "org.headbridge.Manager",
-                ).await {
-                    let target = val.unwrap_or_else(|| "15".to_string());
-                    let res: Result<bool, _> = proxy.call("SetStandby", &(target.clone(),)).await;
-                    if let Ok(true) = res {
-                        println!("Auto-standby set to: {} minutes", target);
-                    } else {
-                        eprintln!("Failed to set standby timer.");
-                    }
-                    return Ok(());
+                )
+                .await
+            {
+                let target = val.unwrap_or_else(|| "15".to_string());
+                let res: Result<bool, _> = proxy.call("SetStandby", &(target.clone(),)).await;
+                if let Ok(true) = res {
+                    println!("Auto-standby set to: {} minutes", target);
+                } else {
+                    eprintln!("Failed to set standby timer.");
                 }
+                return Ok(());
+            }
             eprintln!("Resonate daemon is not running.");
         }
 
@@ -712,15 +821,17 @@ WantedBy=default.target
                     "org.headbridge",
                     "/org/headbridge",
                     "org.headbridge.Manager",
-                ).await {
-                    let act = action.unwrap_or_else(|| "anc".to_string());
-                    let res: Result<(bool, String), _> = proxy.call("SetActionButton", &(act,)).await;
-                    match res {
-                        Ok((_, msg)) => println!("{}", msg),
-                        Err(e) => eprintln!("Action button call failed: {}", e),
-                    }
-                    return Ok(());
+                )
+                .await
+            {
+                let act = action.unwrap_or_else(|| "anc".to_string());
+                let res: Result<(bool, String), _> = proxy.call("SetActionButton", &(act,)).await;
+                match res {
+                    Ok((_, msg)) => println!("{}", msg),
+                    Err(e) => eprintln!("Action button call failed: {}", e),
                 }
+                return Ok(());
+            }
             eprintln!("Resonate daemon is not running.");
         }
 
@@ -731,20 +842,22 @@ WantedBy=default.target
                     "org.headbridge",
                     "/org/headbridge",
                     "org.headbridge.Manager",
-                ).await {
-                    let enable = match action.as_deref() {
-                        Some("on") | Some("enable") | Some("true") | Some("1") => true,
-                        Some("off") | Some("disable") | Some("false") | Some("0") => false,
-                        _ => true,
-                    };
-                    let res: Result<bool, _> = proxy.call("SetTouchSensor", &(enable,)).await;
-                    if let Ok(true) = res {
-                        println!("Touch sensor set to: {}", enable);
-                    } else {
-                        eprintln!("Failed to set touch sensor.");
-                    }
-                    return Ok(());
+                )
+                .await
+            {
+                let enable = match action.as_deref() {
+                    Some("on") | Some("enable") | Some("true") | Some("1") => true,
+                    Some("off") | Some("disable") | Some("false") | Some("0") => false,
+                    _ => true,
+                };
+                let res: Result<bool, _> = proxy.call("SetTouchSensor", &(enable,)).await;
+                if let Ok(true) = res {
+                    println!("Touch sensor set to: {}", enable);
+                } else {
+                    eprintln!("Failed to set touch sensor.");
                 }
+                return Ok(());
+            }
             eprintln!("Resonate daemon is not running.");
         }
 
@@ -755,20 +868,22 @@ WantedBy=default.target
                     "org.headbridge",
                     "/org/headbridge",
                     "org.headbridge.Manager",
-                ).await {
-                    let enable = match action.as_deref() {
-                        Some("on") | Some("enable") | Some("true") | Some("1") => true,
-                        Some("off") | Some("disable") | Some("false") | Some("0") => false,
-                        _ => true,
-                    };
-                    let res: Result<bool, _> = proxy.call("SetDsee", &(enable,)).await;
-                    if let Ok(true) = res {
-                        println!("DSEE audio enhancement set to: {}", enable);
-                    } else {
-                        eprintln!("Failed to set DSEE.");
-                    }
-                    return Ok(());
+                )
+                .await
+            {
+                let enable = match action.as_deref() {
+                    Some("on") | Some("enable") | Some("true") | Some("1") => true,
+                    Some("off") | Some("disable") | Some("false") | Some("0") => false,
+                    _ => true,
+                };
+                let res: Result<bool, _> = proxy.call("SetDsee", &(enable,)).await;
+                if let Ok(true) = res {
+                    println!("DSEE audio enhancement set to: {}", enable);
+                } else {
+                    eprintln!("Failed to set DSEE.");
                 }
+                return Ok(());
+            }
             eprintln!("Resonate daemon is not running.");
         }
 
@@ -779,15 +894,17 @@ WantedBy=default.target
                     "org.headbridge",
                     "/org/headbridge",
                     "org.headbridge.Manager",
-                ).await {
-                    let act = action.unwrap_or_else(|| "start".to_string());
-                    let res: Result<(bool, String), _> = proxy.call("Optimize", &(act,)).await;
-                    match res {
-                        Ok((_, msg)) => println!("{}", msg),
-                        Err(e) => eprintln!("Optimize call failed: {}", e),
-                    }
-                    return Ok(());
+                )
+                .await
+            {
+                let act = action.unwrap_or_else(|| "start".to_string());
+                let res: Result<(bool, String), _> = proxy.call("Optimize", &(act,)).await;
+                match res {
+                    Ok((_, msg)) => println!("{}", msg),
+                    Err(e) => eprintln!("Optimize call failed: {}", e),
                 }
+                return Ok(());
+            }
             eprintln!("Resonate daemon is not running.");
         }
     }
@@ -805,7 +922,8 @@ fn format_waybar(status_json: &str) -> String {
             "tooltip": "No supported headphones connected",
             "class": "disconnected",
             "percentage": 0
-        }).to_string();
+        })
+        .to_string();
     }
 
     let dev_name = val["deviceName"].as_str().unwrap_or("Headphones");
@@ -826,7 +944,12 @@ fn format_waybar(status_json: &str) -> String {
     };
 
     let text = if batt >= 0 {
-        format!("🎧 {}% ({}){}", batt, mode_tag, if is_charging { " ⚡" } else { "" })
+        format!(
+            "🎧 {}% ({}){}",
+            batt,
+            mode_tag,
+            if is_charging { " ⚡" } else { "" }
+        )
     } else {
         format!("🎧 ({})", mode_tag)
     };
@@ -847,7 +970,8 @@ fn format_waybar(status_json: &str) -> String {
         "tooltip": tooltip,
         "class": format!("connected {}", noise_mode),
         "percentage": batt.max(0)
-    }).to_string()
+    })
+    .to_string()
 }
 
 fn print_formatted_status(status_json: &str, format: &str) {

@@ -1,3 +1,10 @@
+//! Asynchronous L2CAP socket connection and session management for Apple devices.
+//!
+//! Apple AirPods and Beats devices expose the Apple Accessory Protocol (AAP) over an
+//! L2CAP seqpacket socket on PSM `0x1001`. This module provides [`L2capSocket`] for raw
+//! frame exchange and [`AppleL2capSession`] for high-level session initialization, background
+//! frame dispatch, and device setting controls.
+
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::Arc;
 use std::time::Duration;
@@ -7,27 +14,45 @@ use tokio::sync::mpsc;
 use crate::protocols::aap::{self, Frame, ListeningMode, MicSelection, SettingId};
 use crate::transport::bluetooth_addr::{self, BdAddr, SockAddrL2};
 
+/// Errors encountered during L2CAP socket operations and connection setup.
 #[derive(Debug, thiserror::Error)]
 pub enum L2capError {
+    /// The specified Bluetooth MAC address was malformed.
     #[error("Failed to parse Bluetooth MAC address: {0}")]
     InvalidAddress(String),
+    /// Creating the raw L2CAP socket via libc failed.
     #[error("Socket creation failed: {0}")]
     SocketFailed(std::io::Error),
+    /// Socket connection failed or was refused by peer.
     #[error("Connect failed: {0}")]
     ConnectFailed(std::io::Error),
+    /// Connection attempt timed out.
     #[error("Connection timed out")]
     Timeout,
+    /// An underlying standard I/O error occurred.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 }
 
+/// An asynchronous non-blocking L2CAP seqpacket socket.
+///
+/// Uses Linux `AF_BLUETOOTH` with `SOCK_SEQPACKET` and `BTPROTO_L2CAP`, integrated
+/// with the Tokio asynchronous runtime via [`AsyncFd`].
 pub struct L2capSocket {
     async_fd: AsyncFd<OwnedFd>,
 }
 
 impl L2capSocket {
+    /// Connects to a remote Bluetooth device on the given PSM with retry delays.
+    ///
+    /// # Arguments
+    ///
+    /// * `address` - Colon-separated Bluetooth MAC address (e.g. `"AA:BB:CC:DD:EE:FF"`).
+    /// * `psm` - Protocol/Service Multiplexer (e.g. `0x1001` for Apple AAP).
+    /// * `timeout` - Total deadline for connection attempts.
     pub async fn connect(address: &str, psm: u16, timeout: Duration) -> Result<Self, L2capError> {
-        let bd_addr = BdAddr::parse(address).ok_or_else(|| L2capError::InvalidAddress(address.to_string()))?;
+        let bd_addr = BdAddr::parse(address)
+            .ok_or_else(|| L2capError::InvalidAddress(address.to_string()))?;
 
         tokio::time::timeout(timeout, async move {
             const RETRY_DELAYS_MS: &[u64] = &[0, 300, 700, 1200, 1800];
@@ -89,11 +114,14 @@ impl L2capSocket {
                     let err = std::io::Error::last_os_error();
                     if err.raw_os_error() == Some(libc::EINPROGRESS) {
                         // Wait for writable readiness with bounded timeout
-                        let wait_res = tokio::time::timeout(Duration::from_millis(1500), async_fd.writable()).await;
+                        let wait_res =
+                            tokio::time::timeout(Duration::from_millis(1500), async_fd.writable())
+                                .await;
                         match wait_res {
                             Ok(Ok(mut guard)) => {
                                 let mut err_code: libc::c_int = 0;
-                                let mut err_len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+                                let mut err_len =
+                                    std::mem::size_of::<libc::c_int>() as libc::socklen_t;
                                 let getsockopt_res = unsafe {
                                     libc::getsockopt(
                                         async_fd.as_raw_fd(),
@@ -135,6 +163,7 @@ impl L2capSocket {
         .map_err(|_| L2capError::Timeout)?
     }
 
+    /// Sends raw bytes over the non-blocking L2CAP socket.
     pub async fn send(&self, data: &[u8]) -> Result<(), L2capError> {
         loop {
             let mut guard = self.async_fd.writable().await?;
@@ -159,6 +188,9 @@ impl L2capSocket {
         }
     }
 
+    /// Receives raw bytes into `buf` from the non-blocking L2CAP socket.
+    ///
+    /// Returns the number of bytes read.
     pub async fn recv(&self, buf: &mut [u8]) -> Result<usize, L2capError> {
         loop {
             let mut guard = self.async_fd.readable().await?;
@@ -178,23 +210,35 @@ impl L2capSocket {
                 }
                 return Err(L2capError::Io(err));
             }
-            guard.retain_ready();
+            guard.clear_ready();
             return Ok(res as usize);
         }
     }
 }
 
+/// An active control session with an Apple AirPods or Beats accessory over L2CAP.
+///
+/// Handles session initialization (handshake, feature bitmask, notification subscription),
+/// spawns a background frame ingestion loop sending incoming frames via an `mpsc` channel,
+/// and provides high-level commands for changing noise modes and device settings.
+#[derive(Clone)]
 pub struct AppleL2capSession {
     socket: Arc<L2capSocket>,
-    _reader_task: tokio::task::JoinHandle<()>,
+    _reader_task: Arc<tokio::task::JoinHandle<()>>,
 }
 
 impl AppleL2capSession {
+    /// Initiates an L2CAP session with an Apple device at the specified MAC address.
+    ///
+    /// Performs protocol handshake, enables Pro 2 feature flags, subscribes to notifications,
+    /// and ensures single-bud ANC mode is enabled by default.
     pub async fn start(
         address: &str,
         tx_incoming: mpsc::Sender<Frame>,
     ) -> Result<Self, L2capError> {
-        let socket = Arc::new(L2capSocket::connect(address, aap::AAP_PSM, Duration::from_millis(6000)).await?);
+        let socket = Arc::new(
+            L2capSocket::connect(address, aap::AAP_PSM, Duration::from_millis(6000)).await?,
+        );
 
         // Spawn background reader
         let reader_sock = socket.clone();
@@ -208,9 +252,10 @@ impl AppleL2capSession {
                     }
                     Ok(n) => {
                         if let Some(frame) = Frame::parse(&buf[..n])
-                            && tx_incoming.send(frame).await.is_err() {
-                                break;
-                            }
+                            && tx_incoming.send(frame).await.is_err()
+                        {
+                            break;
+                        }
                     }
                     Err(_) => {
                         break;
@@ -228,23 +273,29 @@ impl AppleL2capSession {
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         // 3. Subscribe to notifications
-        socket.send(&aap::subscribe_notifications_frame().encode()).await?;
+        socket
+            .send(&aap::subscribe_notifications_frame().encode())
+            .await?;
         tokio::time::sleep(Duration::from_millis(150)).await;
 
         // 4. Auto-enable Single-Bud ANC so Noise Cancellation works reliably
         // regardless of whether user wears one bud, both buds, or adjusts a bud.
-        let _ = socket.send(&aap::write_setting(SettingId::OneBudAnc as u8, 1).encode()).await;
+        let _ = socket
+            .send(&aap::write_setting(SettingId::OneBudAnc as u8, 1).encode())
+            .await;
 
         Ok(Self {
             socket,
-            _reader_task: reader_task,
+            _reader_task: Arc::new(reader_task),
         })
     }
 
+    /// Encodes and transmits a raw Apple Accessory Protocol frame.
     pub async fn send_frame(&self, frame: &Frame) -> Result<(), L2capError> {
         self.socket.send(&frame.encode()).await
     }
 
+    /// Sets the active listening / noise control mode (Off, Noise Cancellation, Transparency, Adaptive).
     pub async fn set_noise_mode(&self, mode: ListeningMode) -> Result<(), L2capError> {
         if mode == ListeningMode::NoiseCancellation {
             // Ensure OneBudAnc is enabled so hardware will not reject ANC if single bud is worn
@@ -253,24 +304,38 @@ impl AppleL2capSession {
         self.send_frame(&aap::set_noise_control(mode)).await
     }
 
+    /// Enables or disables Conversation Awareness (AirPods Pro 2).
     pub async fn set_conversation_awareness(&self, enabled: bool) -> Result<(), L2capError> {
-        self.send_frame(&aap::set_conversation_awareness(enabled)).await
+        self.send_frame(&aap::set_conversation_awareness(enabled))
+            .await
     }
 
+    /// Enables or disables automatic in-ear detection.
     pub async fn set_ear_detection(&self, enabled: bool) -> Result<(), L2capError> {
         self.send_frame(&aap::set_ear_detection(enabled)).await
     }
 
+    /// Configures the active microphone selection (automatic, left bud, right bud).
     pub async fn set_mic_mode(&self, mode: MicSelection) -> Result<(), L2capError> {
         self.send_frame(&aap::set_mic_mode(mode)).await
     }
 
+    /// Configures single-bud ANC permission (allows ANC when only one earbud is worn).
     pub async fn set_one_bud_anc(&self, enabled: bool) -> Result<(), L2capError> {
-        self.send_frame(&aap::write_setting(SettingId::OneBudAnc as u8, if enabled { 1 } else { 2 })).await
+        self.send_frame(&aap::write_setting(
+            SettingId::OneBudAnc as u8,
+            if enabled { 1 } else { 2 },
+        ))
+        .await
     }
 
+    /// Adjusts the volume of charging case and bud alert tones (0 to 100).
     pub async fn set_chime_volume(&self, vol: u8) -> Result<(), L2capError> {
-        self.send_frame(&aap::write_setting(SettingId::ChimeVolume as u8, vol.min(100))).await
+        self.send_frame(&aap::write_setting(
+            SettingId::ChimeVolume as u8,
+            vol.min(100),
+        ))
+        .await
     }
 }
 
@@ -307,4 +372,3 @@ mod tests {
         }
     }
 }
-

@@ -1,9 +1,16 @@
+//! Asynchronous RFCOMM socket connection and session management for Sony headphones.
+//!
+//! Sony WH/WF/MDR Bluetooth headphones expose their proprietary MDR protocol over an
+//! RFCOMM serial connection (typically channel 1). This module provides [`RfcommSocket`]
+//! for packet-framed transport and [`SonyMdrSession`] for orchestrating commands, auto-ACKs,
+//! and feature settings.
+
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 use tokio::io::unix::AsyncFd;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::mpsc;
 
 use crate::protocols::sony::{
     SonyMDRFrameParser, SonyMDRFraming, SonyMDRPacket, SonyV1AutomaticPowerOff,
@@ -11,28 +18,46 @@ use crate::protocols::sony::{
 };
 use crate::transport::bluetooth_addr::{self, BdAddr, SockAddrRc};
 
+/// Errors that can occur during RFCOMM socket communication.
 #[derive(Debug, thiserror::Error)]
 pub enum RfcommError {
+    /// The specified Bluetooth MAC address was malformed.
     #[error("Failed to parse Bluetooth MAC address: {0}")]
     InvalidAddress(String),
+    /// Creating the raw RFCOMM socket via libc failed.
     #[error("Socket creation failed: {0}")]
     SocketFailed(std::io::Error),
+    /// Connection to the RFCOMM channel failed.
     #[error("Connect failed: {0}")]
     ConnectFailed(std::io::Error),
+    /// The connection attempt timed out.
     #[error("Connection timed out")]
     Timeout,
+    /// An underlying standard I/O error occurred.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 }
 
+/// An asynchronous non-blocking RFCOMM stream socket.
 pub struct RfcommSocket {
     async_fd: AsyncFd<OwnedFd>,
-    parser: SonyMDRFrameParser,
 }
 
 impl RfcommSocket {
-    pub async fn connect(address: &str, channel: u8, timeout: Duration) -> Result<Self, RfcommError> {
-        let bd_addr = BdAddr::parse(address).ok_or_else(|| RfcommError::InvalidAddress(address.to_string()))?;
+    /// Connects to an RFCOMM channel on a remote Bluetooth device.
+    ///
+    /// # Arguments
+    ///
+    /// * `address` - Colon-separated MAC address (e.g. `"AA:BB:CC:DD:EE:FF"`).
+    /// * `channel` - RFCOMM channel number (typically 1 for Sony MDR devices).
+    /// * `timeout` - Connection timeout duration.
+    pub async fn connect(
+        address: &str,
+        channel: u8,
+        timeout: Duration,
+    ) -> Result<Self, RfcommError> {
+        let bd_addr = BdAddr::parse(address)
+            .ok_or_else(|| RfcommError::InvalidAddress(address.to_string()))?;
 
         tokio::time::timeout(timeout, async move {
             let fd = unsafe {
@@ -72,7 +97,8 @@ impl RfcommSocket {
                     owned,
                     tokio::io::Interest::READABLE | tokio::io::Interest::WRITABLE,
                 )
-            }.map_err(|e| RfcommError::Io(std::io::Error::other(e.to_string())))?;
+            }
+            .map_err(|e| RfcommError::Io(std::io::Error::other(e.to_string())))?;
 
             if ret < 0 {
                 let err = std::io::Error::last_os_error();
@@ -103,15 +129,13 @@ impl RfcommSocket {
                 }
             }
 
-            Ok(Self {
-                async_fd,
-                parser: SonyMDRFrameParser::new(),
-            })
+            Ok(Self { async_fd })
         })
         .await
         .map_err(|_| RfcommError::Timeout)?
     }
 
+    /// Encodes and sends a framed [`SonyMDRPacket`] over the RFCOMM socket.
     pub async fn send_packet(&self, packet: &SonyMDRPacket) -> Result<(), RfcommError> {
         let encoded = SonyMDRFraming::encode(packet);
         let mut guard = self.async_fd.writable().await?;
@@ -130,70 +154,67 @@ impl RfcommSocket {
         Ok(())
     }
 
-    pub async fn read_packets(&mut self) -> Result<Vec<SonyMDRPacket>, RfcommError> {
-        let mut buf = [0u8; 1024];
-        let mut guard = self.async_fd.readable().await?;
-        let res = unsafe {
-            libc::recv(
-                self.async_fd.as_raw_fd(),
-                buf.as_mut_ptr() as *mut libc::c_void,
-                buf.len(),
-                0,
-            )
-        };
-        if res < 0 {
-            let err = std::io::Error::last_os_error();
-            if err.kind() == std::io::ErrorKind::WouldBlock {
-                guard.clear_ready();
-                return Ok(Vec::new());
+    /// Receives raw bytes into `buf` from the non-blocking RFCOMM socket.
+    pub async fn recv(&self, buf: &mut [u8]) -> Result<usize, RfcommError> {
+        loop {
+            let mut guard = self.async_fd.readable().await?;
+            let res = unsafe {
+                libc::recv(
+                    self.async_fd.as_raw_fd(),
+                    buf.as_mut_ptr() as *mut libc::c_void,
+                    buf.len(),
+                    0,
+                )
+            };
+            if res < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.kind() == std::io::ErrorKind::WouldBlock {
+                    guard.clear_ready();
+                    continue;
+                }
+                return Err(RfcommError::Io(err));
             }
-            return Err(RfcommError::Io(err));
+            guard.clear_ready();
+            return Ok(res as usize);
         }
-        guard.retain_ready();
-        let bytes_read = res as usize;
-        if bytes_read == 0 {
-            return Err(RfcommError::Io(std::io::Error::new(
-                std::io::ErrorKind::ConnectionReset,
-                "RFCOMM peer closed connection",
-            )));
-        }
-
-        Ok(self.parser.append(&buf[..bytes_read]))
     }
 }
 
+/// An active Sony MDR control session over RFCOMM.
+///
+/// Dispatches packets, automatically acknowledges incoming non-ACK packets, tracks
+/// alternating sequence bits, and sends Sony V1/V2 protocol control messages.
+#[derive(Clone)]
 pub struct SonyMdrSession {
-    socket: Arc<Mutex<RfcommSocket>>,
+    socket: Arc<RfcommSocket>,
     sequence: Arc<AtomicU8>,
-    _reader_task: tokio::task::JoinHandle<()>,
+    _reader_task: Arc<tokio::task::JoinHandle<()>>,
 }
 
 impl SonyMdrSession {
+    /// Connects to a Sony headphone via RFCOMM, sends initialization packets,
+    /// and starts a background packet receiver task that sends decoded packets to `tx_incoming`.
     pub async fn start(
         address: &str,
         tx_incoming: mpsc::Sender<SonyMDRPacket>,
     ) -> Result<Self, RfcommError> {
-        let socket = Arc::new(Mutex::new(
-            RfcommSocket::connect(address, 1, Duration::from_millis(3500)).await?,
-        ));
+        let socket =
+            Arc::new(RfcommSocket::connect(address, 1, Duration::from_millis(3500)).await?);
         let sequence = Arc::new(AtomicU8::new(0));
 
         // Send initial V1 Init packet
-        {
-            let init_pkt = SonyMDRPacket::new(SonyMDRPacket::COMMAND_TYPE, 0, vec![0x00, 0x00]);
-            socket.lock().await.send_packet(&init_pkt).await?;
-        }
+        let init_pkt = SonyMDRPacket::new(SonyMDRPacket::COMMAND_TYPE, 0, vec![0x00, 0x00]);
+        socket.send_packet(&init_pkt).await?;
 
         let reader_sock = socket.clone();
         let reader_task = tokio::spawn(async move {
+            let mut parser = SonyMDRFrameParser::new();
+            let mut buf = [0u8; 1024];
             loop {
-                let packets_res = {
-                    let mut sock = reader_sock.lock().await;
-                    sock.read_packets().await
-                };
-
-                match packets_res {
-                    Ok(packets) => {
+                match reader_sock.recv(&mut buf).await {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let packets = parser.append(&buf[..n]);
                         for pkt in packets {
                             // Immediately send ACK for non-ACK packets
                             if pkt.data_type != SonyMDRPacket::ACK_TYPE {
@@ -202,7 +223,7 @@ impl SonyMdrSession {
                                     pkt.sequence ^ 1,
                                     vec![],
                                 );
-                                let _ = reader_sock.lock().await.send_packet(&ack).await;
+                                let _ = reader_sock.send_packet(&ack).await;
                             }
 
                             if tx_incoming.send(pkt).await.is_err() {
@@ -210,9 +231,7 @@ impl SonyMdrSession {
                             }
                         }
                     }
-                    Err(_) => {
-                        break;
-                    }
+                    Err(_) => break,
                 }
             }
         });
@@ -220,17 +239,23 @@ impl SonyMdrSession {
         Ok(Self {
             socket,
             sequence,
-            _reader_task: reader_task,
+            _reader_task: Arc::new(reader_task),
         })
     }
 
+    /// Sends a command packet with the next alternating sequence number.
     pub async fn send_command(&self, payload: Vec<u8>) -> Result<(), RfcommError> {
         let seq = self.sequence.fetch_add(1, Ordering::SeqCst) % 2;
         let pkt = SonyMDRPacket::new(SonyMDRPacket::COMMAND_TYPE, seq, payload);
-        self.socket.lock().await.send_packet(&pkt).await
+        self.socket.send_packet(&pkt).await
     }
 
-    pub async fn set_noise_mode(&self, mode_str: &str, ambient_level: i32) -> Result<(), RfcommError> {
+    /// Sets the noise control mode and ambient sound level (0 to 20).
+    pub async fn set_noise_mode(
+        &self,
+        mode_str: &str,
+        ambient_level: i32,
+    ) -> Result<(), RfcommError> {
         let (nc_effect, asm_setting) = match mode_str.to_lowercase().as_str() {
             "anc" | "nc" | "on" => (0x01, 0x00),
             "ambient" | "transparency" => (0x02, 0x01),
@@ -250,32 +275,44 @@ impl SonyMdrSession {
         self.send_command(payload).await
     }
 
-    pub async fn set_equalizer_preset(&self, preset: SonyV1EqualizerPreset) -> Result<(), RfcommError> {
+    /// Sets an equalizer preset on the headphone.
+    pub async fn set_equalizer_preset(
+        &self,
+        preset: SonyV1EqualizerPreset,
+    ) -> Result<(), RfcommError> {
         let payload = SonyV1Payloads::equalizer_preset(preset);
         self.send_command(payload).await
     }
 
+    /// Sets the 5 equalizer bands and Clear Bass level directly.
     pub async fn set_equalizer_bands(&self, values: &[i32]) -> Result<(), RfcommError> {
         let payload = SonyV1Payloads::equalizer_bands(values);
         self.send_command(payload).await
     }
 
+    /// Enables or disables the side touch sensor control panel.
     pub async fn set_touch_sensor(&self, enabled: bool) -> Result<(), RfcommError> {
         let payload = SonyV1Payloads::touch_sensor(enabled, 0);
         self.send_command(payload).await
     }
 
+    /// Enables or disables DSEE Extreme audio upscaling.
     pub async fn set_dsee(&self, enabled: bool) -> Result<(), RfcommError> {
         let payload = SonyV1Payloads::dsee(enabled);
         self.send_command(payload).await
     }
 
+    /// Starts or cancels NC optimizer / atmospheric pressure calibration.
     pub async fn set_optimizer(&self, start: bool) -> Result<(), RfcommError> {
         let payload = SonyV1Payloads::optimizer(start);
         self.send_command(payload).await
     }
 
-    pub async fn set_automatic_power_off(&self, mode: SonyV1AutomaticPowerOff) -> Result<(), RfcommError> {
+    /// Configures the auto-power off timeout mode.
+    pub async fn set_automatic_power_off(
+        &self,
+        mode: SonyV1AutomaticPowerOff,
+    ) -> Result<(), RfcommError> {
         let payload = SonyV1Payloads::automatic_power_off(mode);
         self.send_command(payload).await
     }

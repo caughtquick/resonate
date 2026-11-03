@@ -3,6 +3,7 @@ name = "resonate"
 version = "0.1.0"
 edition = "2024"
 authors = ["Abhijit Sipahimalani"]
+license = "MIT"
 description = "Native Linux Bluetooth headphone daemon and CLI for AirPods, Sony MDR, and Bowers & Wilkins"
 
 [dependencies]

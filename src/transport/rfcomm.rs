@@ -180,6 +180,16 @@ impl RfcommSocket {
     }
 }
 
+/// RAII wrapper that aborts a spawned Tokio background task when dropped.
+#[derive(Debug)]
+pub struct AbortOnDrop(pub tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// An active Sony MDR control session over RFCOMM.
 ///
 /// Dispatches packets, automatically acknowledges incoming non-ACK packets, tracks
@@ -188,7 +198,7 @@ impl RfcommSocket {
 pub struct SonyMdrSession {
     socket: Arc<RfcommSocket>,
     sequence: Arc<AtomicU8>,
-    _reader_task: Arc<tokio::task::JoinHandle<()>>,
+    _reader_task: Arc<AbortOnDrop>,
 }
 
 impl SonyMdrSession {
@@ -239,7 +249,7 @@ impl SonyMdrSession {
         Ok(Self {
             socket,
             sequence,
-            _reader_task: Arc::new(reader_task),
+            _reader_task: Arc::new(AbortOnDrop(reader_task)),
         })
     }
 

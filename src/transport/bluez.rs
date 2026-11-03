@@ -5,12 +5,23 @@
 //! [`BluezGattClient`] for writing RPC requests and subscribing to notification characteristics.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use zbus::Connection;
 use zbus::fdo::ObjectManagerProxy;
 use zbus::proxy;
 use zbus::zvariant::Value;
 
 use crate::protocols::bw::{self, BWRPC, BWRPCCommand, BWRPCatalog};
+
+/// RAII wrapper that aborts a spawned Tokio background task when dropped.
+#[derive(Debug)]
+pub struct AbortOnDrop(pub tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
 
 /// D-Bus proxy trait for the standard BlueZ `org.bluez.GattCharacteristic1` interface.
 #[proxy(
@@ -58,6 +69,7 @@ pub struct BluezGattClient {
     req_char: GattCharacteristic1Proxy<'static>,
     /// Proxy to the GATT characteristic receiving command responses and telemetry notifications.
     pub resp_char: GattCharacteristic1Proxy<'static>,
+    _reader_task: Option<Arc<AbortOnDrop>>,
 }
 
 impl BluezGattClient {
@@ -143,7 +155,13 @@ impl BluezGattClient {
             _conn: conn,
             req_char,
             resp_char,
+            _reader_task: None,
         })
+    }
+
+    /// Attaches a reader task handle to this client, ensuring it aborts when the client is dropped.
+    pub fn set_reader_task(&mut self, handle: tokio::task::JoinHandle<()>) {
+        self._reader_task = Some(Arc::new(AbortOnDrop(handle)));
     }
 
     /// Serializes and writes a MessagePack RPC command to the request characteristic.

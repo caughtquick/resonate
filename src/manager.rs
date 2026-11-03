@@ -17,6 +17,7 @@ use crate::protocols::aap::{
     self, BatteryKind, BatteryStatus, Frame, ListeningMode, MicSelection, Opcode, SettingId,
     SettingNotice,
 };
+use crate::protocols::bw::{BWRPC, BWRPCatalog};
 use crate::protocols::sony::{SonyMDRPacket, SonyV1AutomaticPowerOff, SonyV1EqualizerPreset};
 use crate::settings::SettingsStore;
 use crate::transport::bluez::BluezGattClient;
@@ -976,6 +977,8 @@ impl DeviceManager {
                         let mut s = self.state.write().await;
                         s.connected = false;
                         s.connection_state = "failed".to_string();
+                        drop(s);
+                        self.notify_state_changed().await;
                         (false, format!("L2CAP connect to {} failed: {}", address, e))
                     }
                 }
@@ -991,6 +994,134 @@ impl DeviceManager {
                     && let Ok(client) =
                         BluezGattClient::new(conn, &paths.request_path, &paths.response_path).await
                 {
+                    // Query initial state from headphone
+                    let _ = client.send_command::<()>(BWRPCatalog::ANC_GET, None).await;
+                    let _ = client
+                        .send_command::<()>(BWRPCatalog::BATTERY_PERCENTAGE_GET, None)
+                        .await;
+                    let _ = client
+                        .send_command::<()>(BWRPCatalog::CHARGING_STATUS_GET, None)
+                        .await;
+                    let _ = client.send_command::<()>(BWRPCatalog::WEAR_GET, None).await;
+
+                    // Listen for incoming notifications / response value changes
+                    let mut stream = client.resp_char.receive_value_changed().await;
+                    let state_clone = self.state.clone();
+                    let active_addr_clone = self.active_address.clone();
+                    let notif_clone = self.notifications.clone();
+                    let dbus_conn_clone = self.dbus_conn.clone();
+                    let expected_addr = address.clone();
+                    let dev_name = name.clone();
+                    let active_bw_client_clone = self.active_bw_client.clone();
+
+                    let reader_task = tokio::spawn(async move {
+                        use futures_lite::StreamExt;
+                        while let Some(change) = stream.next().await {
+                            if active_addr_clone.read().await.as_deref() != Some(&expected_addr) {
+                                break;
+                            }
+                            if let Ok(raw) = change.get().await
+                                && let Ok(msg) = BWRPC::decode(&raw)
+                            {
+                                let mut state_changed = false;
+                                match (msg.command.namespace, msg.command.id) {
+                                    (0x03, 0x01) | (0x03, 0x02) => {
+                                        if let Some(Ok(val)) = msg.deserialize_payload::<u8>() {
+                                            let mode = match val {
+                                                0 => "off",
+                                                1 => "anc",
+                                                2 => "transparency",
+                                                _ => "anc",
+                                            };
+                                            let mut s = state_clone.write().await;
+                                            if s.noise_mode != mode {
+                                                s.noise_mode = mode.to_string();
+                                                state_changed = true;
+                                            }
+                                        }
+                                    }
+                                    (0x08, 0x0C) => {
+                                        if let Some(Ok(val)) =
+                                            msg.deserialize_payload::<i32>().or_else(|| {
+                                                msg.deserialize_payload::<u8>()
+                                                    .map(|r| r.map(|v| v as i32))
+                                            })
+                                        {
+                                            let mut s = state_clone.write().await;
+                                            if s.battery_percent != val {
+                                                s.battery_percent = val;
+                                                state_changed = true;
+                                            }
+                                            drop(s);
+                                            notif_clone
+                                                .lock()
+                                                .await
+                                                .check_battery(&dev_name, val)
+                                                .await;
+                                        }
+                                    }
+                                    (0x08, 0x0B) => {
+                                        let is_charging = msg
+                                            .deserialize_payload::<bool>()
+                                            .and_then(|r| r.ok())
+                                            .or_else(|| {
+                                                msg.deserialize_payload::<u8>()
+                                                    .and_then(|r| r.ok())
+                                                    .map(|v| v != 0)
+                                            });
+                                        if let Some(charging) = is_charging {
+                                            let mut s = state_clone.write().await;
+                                            if s.is_charging != charging {
+                                                s.is_charging = charging;
+                                                state_changed = true;
+                                            }
+                                        }
+                                    }
+                                    (0x0A, 0x01) | (0x0A, 0x02) => {
+                                        let wear = msg
+                                            .deserialize_payload::<bool>()
+                                            .and_then(|r| r.ok())
+                                            .or_else(|| {
+                                                msg.deserialize_payload::<u8>()
+                                                    .and_then(|r| r.ok())
+                                                    .map(|v| v != 0)
+                                            });
+                                        if let Some(wear_val) = wear {
+                                            let mut s = state_clone.write().await;
+                                            if s.ear_detection != wear_val {
+                                                s.ear_detection = wear_val;
+                                                state_changed = true;
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+
+                                if state_changed {
+                                    let s = state_clone.read().await;
+                                    let json = format_state_json(&s);
+                                    drop(s);
+                                    if let Some(conn) = dbus_conn_clone.lock().await.as_ref() {
+                                        let _ = conn
+                                            .emit_signal(
+                                                None::<()>,
+                                                "/org/headbridge",
+                                                "org.headbridge.Manager",
+                                                "StateChanged",
+                                                &(json,),
+                                            )
+                                            .await;
+                                    }
+                                }
+                            }
+                        }
+
+                        println!("B&W GATT session ended for {}", expected_addr);
+                        *active_bw_client_clone.lock().await = None;
+                    });
+
+                    let mut client = client;
+                    client.set_reader_task(reader_task);
                     *self.active_bw_client.lock().await = Some(client);
                 }
 
@@ -1140,7 +1271,9 @@ impl DeviceManager {
                         if let Some(p) = device.battery_percent {
                             s.battery_percent = p as i32;
                         }
+                        drop(s);
                         *self.active_address.write().await = Some(address.clone());
+                        self.notify_state_changed().await;
                         (true, format!("Connected to Sony {} ({})", name, address))
                     }
                 }
@@ -1160,9 +1293,16 @@ impl DeviceManager {
 
             // 1. Sync default PipeWire audio sink
             if let Some(sink) = AudioMonitor::get_default_sink().await {
-                let mut s = self.state.write().await;
-                if s.audio_sink != sink {
-                    s.audio_sink = sink;
+                let mut sink_changed = false;
+                {
+                    let mut s = self.state.write().await;
+                    if s.audio_sink != sink {
+                        s.audio_sink = sink;
+                        sink_changed = true;
+                    }
+                }
+                if sink_changed {
+                    self.notify_state_changed().await;
                 }
             }
 

@@ -216,6 +216,16 @@ impl L2capSocket {
     }
 }
 
+/// RAII wrapper that aborts a spawned Tokio background task when dropped.
+#[derive(Debug)]
+pub struct AbortOnDrop(pub tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// An active control session with an Apple AirPods or Beats accessory over L2CAP.
 ///
 /// Handles session initialization (handshake, feature bitmask, notification subscription),
@@ -224,7 +234,7 @@ impl L2capSocket {
 #[derive(Clone)]
 pub struct AppleL2capSession {
     socket: Arc<L2capSocket>,
-    _reader_task: Arc<tokio::task::JoinHandle<()>>,
+    _reader_task: Arc<AbortOnDrop>,
 }
 
 impl AppleL2capSession {
@@ -286,7 +296,7 @@ impl AppleL2capSession {
 
         Ok(Self {
             socket,
-            _reader_task: Arc::new(reader_task),
+            _reader_task: Arc::new(AbortOnDrop(reader_task)),
         })
     }
 

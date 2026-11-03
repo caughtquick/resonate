@@ -171,12 +171,18 @@ impl ResonateDbusManager {
         }).await.unwrap_or_else(|e| (false, format!("Tokio runtime spawn error: {}", e)))
     }
 
-    async fn set_ambient_level(&self, _level: i32) -> bool {
-        true
+    async fn set_ambient_level(&self, level: i32) -> bool {
+        let mgr = self.manager.clone();
+        self.manager.handle.spawn(async move {
+            mgr.set_ambient_level(level).await
+        }).await.unwrap_or(false)
     }
 
-    async fn set_equalizer(&self, _args: String) -> (bool, String) {
-        (true, "Equalizer set".to_string())
+    async fn set_equalizer(&self, args: String) -> (bool, String) {
+        let mgr = self.manager.clone();
+        self.manager.handle.spawn(async move {
+            mgr.set_equalizer(&args).await
+        }).await.unwrap_or_else(|e| (false, format!("Error: {}", e)))
     }
 
     async fn set_wear_sensor(&self, enable: bool) -> bool {
@@ -207,27 +213,45 @@ impl ResonateDbusManager {
         }).await.unwrap_or(false)
     }
 
+    async fn set_chime_volume(&self, vol: u8) -> bool {
+        let mgr = self.manager.clone();
+        self.manager.handle.spawn(async move {
+            mgr.set_chime_volume(vol).await
+        }).await.unwrap_or(false)
+    }
+
     async fn set_touch_sensor(&self, enable: bool) -> bool {
-        let mut s = self.manager.state.write().await;
-        s.touch_sensor = enable;
-        true
+        let mgr = self.manager.clone();
+        self.manager.handle.spawn(async move {
+            mgr.set_touch_sensor(enable).await
+        }).await.unwrap_or(false)
     }
 
     async fn set_dsee(&self, enable: bool) -> bool {
-        let mut s = self.manager.state.write().await;
-        s.dsee = enable;
-        true
+        let mgr = self.manager.clone();
+        self.manager.handle.spawn(async move {
+            mgr.set_dsee(enable).await
+        }).await.unwrap_or(false)
     }
 
-    async fn set_standby(&self, _val: String) -> bool {
-        true
+    async fn set_standby(&self, val: String) -> bool {
+        let mgr = self.manager.clone();
+        self.manager.handle.spawn(async move {
+            mgr.set_standby(&val).await
+        }).await.unwrap_or(false)
     }
 
-    async fn set_action_button(&self, _action: String) -> (bool, String) {
-        (true, "Action button configured".to_string())
+    async fn set_action_button(&self, action: String) -> (bool, String) {
+        let mgr = self.manager.clone();
+        self.manager.handle.spawn(async move {
+            mgr.set_action_button(&action).await
+        }).await.unwrap_or_else(|e| (false, format!("Error: {}", e)))
     }
 
-    async fn optimize(&self, _action: String) -> (bool, String) {
-        (true, "Optimizer calibration finished".to_string())
+    async fn optimize(&self, action: String) -> (bool, String) {
+        let mgr = self.manager.clone();
+        self.manager.handle.spawn(async move {
+            mgr.optimize(&action).await
+        }).await.unwrap_or_else(|e| (false, format!("Error: {}", e)))
     }
 }

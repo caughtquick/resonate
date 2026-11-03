@@ -1,8 +1,14 @@
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::unix::AsyncFd;
+use tokio::sync::{mpsc, Mutex};
 
-use crate::protocols::sony::{SonyMDRFrameParser, SonyMDRFraming, SonyMDRPacket};
+use crate::protocols::sony::{
+    SonyMDRFrameParser, SonyMDRFraming, SonyMDRPacket, SonyV1AutomaticPowerOff,
+    SonyV1EqualizerPreset, SonyV1Payloads,
+};
 use crate::transport::bluetooth_addr::{self, BdAddr, SockAddrRc};
 
 #[derive(Debug, thiserror::Error)]
@@ -153,5 +159,124 @@ impl RfcommSocket {
         }
 
         Ok(self.parser.append(&buf[..bytes_read]))
+    }
+}
+
+pub struct SonyMdrSession {
+    socket: Arc<Mutex<RfcommSocket>>,
+    sequence: Arc<AtomicU8>,
+    _reader_task: tokio::task::JoinHandle<()>,
+}
+
+impl SonyMdrSession {
+    pub async fn start(
+        address: &str,
+        tx_incoming: mpsc::Sender<SonyMDRPacket>,
+    ) -> Result<Self, RfcommError> {
+        let socket = Arc::new(Mutex::new(
+            RfcommSocket::connect(address, 1, Duration::from_millis(3500)).await?,
+        ));
+        let sequence = Arc::new(AtomicU8::new(0));
+
+        // Send initial V1 Init packet
+        {
+            let init_pkt = SonyMDRPacket::new(SonyMDRPacket::COMMAND_TYPE, 0, vec![0x00, 0x00]);
+            socket.lock().await.send_packet(&init_pkt).await?;
+        }
+
+        let reader_sock = socket.clone();
+        let reader_task = tokio::spawn(async move {
+            loop {
+                let packets_res = {
+                    let mut sock = reader_sock.lock().await;
+                    sock.read_packets().await
+                };
+
+                match packets_res {
+                    Ok(packets) => {
+                        for pkt in packets {
+                            // Immediately send ACK for non-ACK packets
+                            if pkt.data_type != SonyMDRPacket::ACK_TYPE {
+                                let ack = SonyMDRPacket::new(
+                                    SonyMDRPacket::ACK_TYPE,
+                                    pkt.sequence ^ 1,
+                                    vec![],
+                                );
+                                let _ = reader_sock.lock().await.send_packet(&ack).await;
+                            }
+
+                            if tx_incoming.send(pkt).await.is_err() {
+                                return;
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        break;
+                    }
+                }
+            }
+        });
+
+        Ok(Self {
+            socket,
+            sequence,
+            _reader_task: reader_task,
+        })
+    }
+
+    pub async fn send_command(&self, payload: Vec<u8>) -> Result<(), RfcommError> {
+        let seq = self.sequence.fetch_add(1, Ordering::SeqCst) % 2;
+        let pkt = SonyMDRPacket::new(SonyMDRPacket::COMMAND_TYPE, seq, payload);
+        self.socket.lock().await.send_packet(&pkt).await
+    }
+
+    pub async fn set_noise_mode(&self, mode_str: &str, ambient_level: i32) -> Result<(), RfcommError> {
+        let (nc_effect, asm_setting) = match mode_str.to_lowercase().as_str() {
+            "anc" | "nc" | "on" => (0x01, 0x00),
+            "ambient" | "transparency" => (0x02, 0x01),
+            "wind" => (0x01, 0x02),
+            _ => (0x00, 0x00), // Off
+        };
+        let clamped_level = ambient_level.clamp(0, 20) as u8;
+        let payload = vec![
+            0x22,
+            nc_effect,
+            0x02,
+            0x01,
+            asm_setting,
+            0x01,
+            clamped_level,
+        ];
+        self.send_command(payload).await
+    }
+
+    pub async fn set_equalizer_preset(&self, preset: SonyV1EqualizerPreset) -> Result<(), RfcommError> {
+        let payload = SonyV1Payloads::equalizer_preset(preset);
+        self.send_command(payload).await
+    }
+
+    pub async fn set_equalizer_bands(&self, values: &[i32]) -> Result<(), RfcommError> {
+        let payload = SonyV1Payloads::equalizer_bands(values);
+        self.send_command(payload).await
+    }
+
+    pub async fn set_touch_sensor(&self, enabled: bool) -> Result<(), RfcommError> {
+        let payload = SonyV1Payloads::touch_sensor(enabled, 0);
+        self.send_command(payload).await
+    }
+
+    pub async fn set_dsee(&self, enabled: bool) -> Result<(), RfcommError> {
+        let payload = SonyV1Payloads::dsee(enabled);
+        self.send_command(payload).await
+    }
+
+    pub async fn set_optimizer(&self, start: bool) -> Result<(), RfcommError> {
+        let payload = SonyV1Payloads::optimizer(start);
+        self.send_command(payload).await
+    }
+
+    pub async fn set_automatic_power_off(&self, mode: SonyV1AutomaticPowerOff) -> Result<(), RfcommError> {
+        let payload = SonyV1Payloads::automatic_power_off(mode);
+        self.send_command(payload).await
     }
 }

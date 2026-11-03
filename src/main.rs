@@ -38,6 +38,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } else if act == "stop" {
                     println!("Stopping daemon...");
                     return Ok(());
+                } else if act == "install" {
+                    let exe_path = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("/usr/local/bin/resonate"));
+                    let service_content = format!(
+r#"[Unit]
+Description=Resonate Bluetooth Headphone Daemon
+After=bluetooth.target sound.target
+
+[Service]
+Type=simple
+ExecStart={} daemon
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+"#, exe_path.display());
+                    let user_systemd_dir = resonate::settings::dirs_config_dir().join("systemd").join("user");
+                    let _ = std::fs::create_dir_all(&user_systemd_dir);
+                    let service_file = user_systemd_dir.join("resonate.service");
+                    match std::fs::write(&service_file, service_content) {
+                        Ok(_) => {
+                            println!("Systemd user service installed to: {}", service_file.display());
+                            println!("To enable and start Resonate automatically on login, run:");
+                            println!("  systemctl --user daemon-reload");
+                            println!("  systemctl --user enable --now resonate.service");
+                        }
+                        Err(e) => eprintln!("Failed to install systemd service: {}", e),
+                    }
+                    return Ok(());
+                } else if act == "uninstall" {
+                    let service_file = resonate::settings::dirs_config_dir().join("systemd").join("user").join("resonate.service");
+                    if service_file.exists() {
+                        let _ = std::fs::remove_file(&service_file);
+                        println!("Removed {}", service_file.display());
+                        println!("Run: systemctl --user daemon-reload");
+                    } else {
+                        println!("No service file found at {}", service_file.display());
+                    }
+                    return Ok(());
                 }
             }
 
@@ -373,12 +412,223 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("Resonate daemon is not running.");
         }
 
-        other_cmd => {
-            if cli.json {
-                println!(r#"{{"command":"{:?}","status":"ok"}}"#, other_cmd);
-            } else {
-                println!("Executed: {:?}", other_cmd);
+        Commands::Mic { mode } => {
+            if let Ok(conn) = zbus::Connection::session().await {
+                if let Ok(proxy) = zbus::Proxy::new(
+                    &conn,
+                    "org.headbridge",
+                    "/org/headbridge",
+                    "org.headbridge.Manager",
+                ).await {
+                    let target = mode.unwrap_or_else(|| "auto".to_string());
+                    let res: Result<bool, _> = proxy.call("SetMicrophoneMode", &(target.clone(),)).await;
+                    if let Ok(true) = res {
+                        println!("Microphone routing set to: {}", target);
+                    } else {
+                        eprintln!("Failed to set microphone mode.");
+                    }
+                    return Ok(());
+                }
             }
+            eprintln!("Resonate daemon is not running.");
+        }
+
+        Commands::OneBudAnc { action } => {
+            if let Ok(conn) = zbus::Connection::session().await {
+                if let Ok(proxy) = zbus::Proxy::new(
+                    &conn,
+                    "org.headbridge",
+                    "/org/headbridge",
+                    "org.headbridge.Manager",
+                ).await {
+                    let enable = match action.as_deref() {
+                        Some("on") | Some("enable") | Some("true") | Some("1") => true,
+                        Some("off") | Some("disable") | Some("false") | Some("0") => false,
+                        _ => true,
+                    };
+                    let res: Result<bool, _> = proxy.call("SetOneBudAnc", &(enable,)).await;
+                    if let Ok(true) = res {
+                        println!("Single-bud ANC set to: {}", enable);
+                    } else {
+                        eprintln!("Failed to set single-bud ANC.");
+                    }
+                    return Ok(());
+                }
+            }
+            eprintln!("Resonate daemon is not running.");
+        }
+
+        Commands::Chime { volume } => {
+            if let Ok(conn) = zbus::Connection::session().await {
+                if let Ok(proxy) = zbus::Proxy::new(
+                    &conn,
+                    "org.headbridge",
+                    "/org/headbridge",
+                    "org.headbridge.Manager",
+                ).await {
+                    let vol = volume.unwrap_or(80);
+                    let res: Result<bool, _> = proxy.call("SetChimeVolume", &(vol,)).await;
+                    if let Ok(true) = res {
+                        println!("Chime tone volume set to: {}", vol);
+                    } else {
+                        eprintln!("Failed to set chime volume.");
+                    }
+                    return Ok(());
+                }
+            }
+            eprintln!("Resonate daemon is not running.");
+        }
+
+        Commands::AmbientLevel { level } => {
+            if let Ok(conn) = zbus::Connection::session().await {
+                if let Ok(proxy) = zbus::Proxy::new(
+                    &conn,
+                    "org.headbridge",
+                    "/org/headbridge",
+                    "org.headbridge.Manager",
+                ).await {
+                    let lvl = level.unwrap_or(10);
+                    let res: Result<bool, _> = proxy.call("SetAmbientLevel", &(lvl,)).await;
+                    if let Ok(true) = res {
+                        println!("Ambient sound level set to: {}", lvl);
+                    } else {
+                        eprintln!("Failed to set ambient level.");
+                    }
+                    return Ok(());
+                }
+            }
+            eprintln!("Resonate daemon is not running.");
+        }
+
+        Commands::Eq { args } => {
+            if let Ok(conn) = zbus::Connection::session().await {
+                if let Ok(proxy) = zbus::Proxy::new(
+                    &conn,
+                    "org.headbridge",
+                    "/org/headbridge",
+                    "org.headbridge.Manager",
+                ).await {
+                    let arg_str = args.join(" ");
+                    let res: Result<(bool, String), _> = proxy.call("SetEqualizer", &(arg_str,)).await;
+                    match res {
+                        Ok((_, msg)) => println!("{}", msg),
+                        Err(e) => eprintln!("Equalizer call failed: {}", e),
+                    }
+                    return Ok(());
+                }
+            }
+            eprintln!("Resonate daemon is not running.");
+        }
+
+        Commands::Standby { val } => {
+            if let Ok(conn) = zbus::Connection::session().await {
+                if let Ok(proxy) = zbus::Proxy::new(
+                    &conn,
+                    "org.headbridge",
+                    "/org/headbridge",
+                    "org.headbridge.Manager",
+                ).await {
+                    let target = val.unwrap_or_else(|| "15".to_string());
+                    let res: Result<bool, _> = proxy.call("SetStandby", &(target.clone(),)).await;
+                    if let Ok(true) = res {
+                        println!("Auto-standby set to: {} minutes", target);
+                    } else {
+                        eprintln!("Failed to set standby timer.");
+                    }
+                    return Ok(());
+                }
+            }
+            eprintln!("Resonate daemon is not running.");
+        }
+
+        Commands::Button { action } => {
+            if let Ok(conn) = zbus::Connection::session().await {
+                if let Ok(proxy) = zbus::Proxy::new(
+                    &conn,
+                    "org.headbridge",
+                    "/org/headbridge",
+                    "org.headbridge.Manager",
+                ).await {
+                    let act = action.unwrap_or_else(|| "anc".to_string());
+                    let res: Result<(bool, String), _> = proxy.call("SetActionButton", &(act,)).await;
+                    match res {
+                        Ok((_, msg)) => println!("{}", msg),
+                        Err(e) => eprintln!("Action button call failed: {}", e),
+                    }
+                    return Ok(());
+                }
+            }
+            eprintln!("Resonate daemon is not running.");
+        }
+
+        Commands::Touch { action } => {
+            if let Ok(conn) = zbus::Connection::session().await {
+                if let Ok(proxy) = zbus::Proxy::new(
+                    &conn,
+                    "org.headbridge",
+                    "/org/headbridge",
+                    "org.headbridge.Manager",
+                ).await {
+                    let enable = match action.as_deref() {
+                        Some("on") | Some("enable") | Some("true") | Some("1") => true,
+                        Some("off") | Some("disable") | Some("false") | Some("0") => false,
+                        _ => true,
+                    };
+                    let res: Result<bool, _> = proxy.call("SetTouchSensor", &(enable,)).await;
+                    if let Ok(true) = res {
+                        println!("Touch sensor set to: {}", enable);
+                    } else {
+                        eprintln!("Failed to set touch sensor.");
+                    }
+                    return Ok(());
+                }
+            }
+            eprintln!("Resonate daemon is not running.");
+        }
+
+        Commands::Dsee { action } => {
+            if let Ok(conn) = zbus::Connection::session().await {
+                if let Ok(proxy) = zbus::Proxy::new(
+                    &conn,
+                    "org.headbridge",
+                    "/org/headbridge",
+                    "org.headbridge.Manager",
+                ).await {
+                    let enable = match action.as_deref() {
+                        Some("on") | Some("enable") | Some("true") | Some("1") => true,
+                        Some("off") | Some("disable") | Some("false") | Some("0") => false,
+                        _ => true,
+                    };
+                    let res: Result<bool, _> = proxy.call("SetDsee", &(enable,)).await;
+                    if let Ok(true) = res {
+                        println!("DSEE audio enhancement set to: {}", enable);
+                    } else {
+                        eprintln!("Failed to set DSEE.");
+                    }
+                    return Ok(());
+                }
+            }
+            eprintln!("Resonate daemon is not running.");
+        }
+
+        Commands::Optimize { action } => {
+            if let Ok(conn) = zbus::Connection::session().await {
+                if let Ok(proxy) = zbus::Proxy::new(
+                    &conn,
+                    "org.headbridge",
+                    "/org/headbridge",
+                    "org.headbridge.Manager",
+                ).await {
+                    let act = action.unwrap_or_else(|| "start".to_string());
+                    let res: Result<(bool, String), _> = proxy.call("Optimize", &(act,)).await;
+                    match res {
+                        Ok((_, msg)) => println!("{}", msg),
+                        Err(e) => eprintln!("Optimize call failed: {}", e),
+                    }
+                    return Ok(());
+                }
+            }
+            eprintln!("Resonate daemon is not running.");
         }
     }
 

@@ -127,6 +127,7 @@ WantedBy=default.target
             }
 
             println!("Starting Resonate Bluetooth Headphone Daemon...");
+            let initial_settings = resonate::settings::SettingsStore::load();
             let state = Arc::new(RwLock::new(ResonateState {
                 connected: false,
                 connection_state: "idle".to_string(),
@@ -135,6 +136,7 @@ WantedBy=default.target
                 battery_right: -1,
                 battery_case: -1,
                 noise_mode: "off".to_string(),
+                auto_pause: initial_settings.data.auto_pause_enabled,
                 ..Default::default()
             }));
 
@@ -359,8 +361,19 @@ WantedBy=default.target
                                         println!("  Case:      {}%", case);
                                     }
                                     println!("ANC Mode:    {}", val["noiseMode"].as_str().unwrap_or(""));
-                                    if let Some(ear) = val["earDetection"].as_bool() {
+                                    if let Some(in_ear) = val["inEar"].as_bool() {
+                                        println!("In-Ear:      {}", if in_ear { "Detected (wearing)" } else { "Not worn" });
+                                        let p = val["inEarPrimary"].as_str().unwrap_or("");
+                                        let s = val["inEarSecondary"].as_str().unwrap_or("");
+                                        if !p.is_empty() && !s.is_empty() {
+                                            println!("  Primary:   {}", p);
+                                            println!("  Secondary: {}", s);
+                                        }
+                                    } else if let Some(ear) = val["earDetection"].as_bool() {
                                         println!("In-Ear:      {}", if ear { "Detected (wearing)" } else { "Not worn" });
+                                    }
+                                    if let Some(ap) = val["autoPause"].as_bool() {
+                                        println!("Auto-Pause:  {}", if ap { "Enabled" } else { "Disabled" });
                                     }
                                     if let Some(conv) = val["conversationAwareness"].as_bool() {
                                         println!("Conv Aware:  {}", if conv { "Enabled" } else { "Disabled" });
@@ -454,7 +467,14 @@ WantedBy=default.target
 
                     let res: Result<(bool, String), _> = proxy.call("SetAnc", &(target_mode,)).await;
                     match res {
-                        Ok((_, msg)) => println!("{}", msg),
+                        Ok((success, msg)) => {
+                            if success {
+                                println!("{}", msg);
+                            } else {
+                                eprintln!("{}", msg);
+                                std::process::exit(1);
+                            }
+                        }
                         Err(e) => eprintln!("Failed to set ANC mode: {}", e),
                     }
                     return Ok(());
@@ -511,6 +531,65 @@ WantedBy=default.target
                 }
             }
             eprintln!("Resonate daemon is not running.");
+        }
+
+        Commands::AutoPause { action } => {
+            if let Ok(conn) = zbus::Connection::session().await {
+                if let Ok(proxy) = zbus::Proxy::new(
+                    &conn,
+                    "org.headbridge",
+                    "/org/headbridge",
+                    "org.headbridge.Manager",
+                ).await {
+                    if let Some(act) = action {
+                        let enable = match act.to_lowercase().as_str() {
+                            "on" | "enable" | "true" | "1" => true,
+                            "off" | "disable" | "false" | "0" => false,
+                            _ => {
+                                eprintln!("Invalid action '{}'. Use 'on' or 'off'.", act);
+                                return Ok(());
+                            }
+                        };
+                        let res: Result<bool, _> = proxy.call("SetAutoPause", &(enable,)).await;
+                        if let Ok(true) = res {
+                            println!("Smart auto-pause: {}", if enable { "Enabled" } else { "Disabled" });
+                        } else {
+                            eprintln!("Failed to set smart auto-pause.");
+                        }
+                    } else {
+                        let current: Result<bool, _> = proxy.get_property("AutoPause").await;
+                        match current {
+                            Ok(val) => println!("Smart auto-pause: {}", if val { "Enabled" } else { "Disabled" }),
+                            Err(e) => eprintln!("Failed to get auto-pause state: {}", e),
+                        }
+                    }
+                    return Ok(());
+                }
+            }
+
+            // Fallback when daemon is not running: read/write settings file directly
+            let mut store = resonate::settings::SettingsStore::load();
+            if let Some(act) = action {
+                let enable = match act.to_lowercase().as_str() {
+                    "on" | "enable" | "true" | "1" => true,
+                    "off" | "disable" | "false" | "0" => false,
+                    _ => {
+                        eprintln!("Invalid action '{}'. Use 'on' or 'off'.", act);
+                        return Ok(());
+                    }
+                };
+                store.set_auto_pause(enable);
+                println!(
+                    "Resonate daemon is not running. Smart auto-pause set to {} in configuration.",
+                    if enable { "Enabled" } else { "Disabled" }
+                );
+            } else {
+                let current = store.get_auto_pause();
+                println!(
+                    "Resonate daemon is not running. Configured smart auto-pause: {}",
+                    if current { "Enabled" } else { "Disabled" }
+                );
+            }
         }
 
         Commands::Mic { mode } => {

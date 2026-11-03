@@ -30,77 +30,106 @@ impl L2capSocket {
         let bd_addr = BdAddr::parse(address).ok_or_else(|| L2capError::InvalidAddress(address.to_string()))?;
 
         tokio::time::timeout(timeout, async move {
-            let fd = unsafe {
-                libc::socket(
-                    bluetooth_addr::AF_BLUETOOTH as i32,
-                    libc::SOCK_SEQPACKET,
-                    bluetooth_addr::BTPROTO_L2CAP,
-                )
-            };
-            if fd < 0 {
-                return Err(L2capError::SocketFailed(std::io::Error::last_os_error()));
-            }
+            const RETRY_DELAYS_MS: &[u64] = &[0, 300, 700, 1200, 1800];
+            let mut last_error = None;
 
-            // Set non-blocking
-            let flags = unsafe { libc::fcntl(fd, libc::F_GETFL, 0) };
-            if flags >= 0 {
-                unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
-            }
+            for (_attempt, &delay) in RETRY_DELAYS_MS.iter().enumerate() {
+                if delay > 0 {
+                    tokio::time::sleep(Duration::from_millis(delay)).await;
+                }
 
-            // Connect to remote target without explicit bind
-            let mut remote_addr: SockAddrL2 = unsafe { std::mem::zeroed() };
-            remote_addr.l2_family = bluetooth_addr::AF_BLUETOOTH;
-            remote_addr.l2_psm = psm.to_le();
-            remote_addr.l2_bdaddr = bd_addr;
-            remote_addr.l2_bdaddr_type = 0; // BDADDR_BREDR
+                let fd = unsafe {
+                    libc::socket(
+                        bluetooth_addr::AF_BLUETOOTH as i32,
+                        libc::SOCK_SEQPACKET,
+                        bluetooth_addr::BTPROTO_L2CAP,
+                    )
+                };
+                if fd < 0 {
+                    last_error = Some(L2capError::SocketFailed(std::io::Error::last_os_error()));
+                    continue;
+                }
 
-            let ret = unsafe {
-                libc::connect(
-                    fd,
-                    &remote_addr as *const _ as *const libc::sockaddr,
-                    std::mem::size_of::<SockAddrL2>() as libc::socklen_t,
-                )
-            };
+                // Set non-blocking
+                let flags = unsafe { libc::fcntl(fd, libc::F_GETFL, 0) };
+                if flags >= 0 {
+                    unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
+                }
 
-            let owned = unsafe { OwnedFd::from_raw_fd(fd) };
-            let async_fd = unsafe {
-                AsyncFd::register_with_interest(
-                    owned,
-                    tokio::io::Interest::READABLE | tokio::io::Interest::WRITABLE,
-                )
-            }.map_err(|e| L2capError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+                // Connect to remote target without explicit bind
+                let mut remote_addr: SockAddrL2 = unsafe { std::mem::zeroed() };
+                remote_addr.l2_family = bluetooth_addr::AF_BLUETOOTH;
+                remote_addr.l2_psm = psm.to_le();
+                remote_addr.l2_bdaddr = bd_addr;
+                remote_addr.l2_bdaddr_type = 0; // BDADDR_BREDR
 
-            if ret < 0 {
-                let err = std::io::Error::last_os_error();
-                if err.raw_os_error() == Some(libc::EINPROGRESS) {
-                    // Wait for writable readiness
-                    let mut guard = async_fd.writable().await?;
-                    let mut err_code: libc::c_int = 0;
-                    let mut err_len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
-                    let getsockopt_res = unsafe {
-                        libc::getsockopt(
-                            async_fd.as_raw_fd(),
-                            libc::SOL_SOCKET,
-                            libc::SO_ERROR,
-                            &mut err_code as *mut _ as *mut libc::c_void,
-                            &mut err_len,
-                        )
-                    };
-                    if getsockopt_res < 0 || err_code != 0 {
-                        let e = if err_code != 0 {
-                            std::io::Error::from_raw_os_error(err_code)
-                        } else {
-                            std::io::Error::last_os_error()
-                        };
-                        return Err(L2capError::ConnectFailed(e));
+                let ret = unsafe {
+                    libc::connect(
+                        fd,
+                        &remote_addr as *const _ as *const libc::sockaddr,
+                        std::mem::size_of::<SockAddrL2>() as libc::socklen_t,
+                    )
+                };
+
+                let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+                let async_fd = match unsafe {
+                    AsyncFd::register_with_interest(
+                        owned,
+                        tokio::io::Interest::READABLE | tokio::io::Interest::WRITABLE,
+                    )
+                } {
+                    Ok(af) => af,
+                    Err(e) => {
+                        last_error = Some(L2capError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())));
+                        continue;
                     }
-                    guard.retain_ready();
+                };
+
+                if ret < 0 {
+                    let err = std::io::Error::last_os_error();
+                    if err.raw_os_error() == Some(libc::EINPROGRESS) {
+                        // Wait for writable readiness with bounded timeout
+                        let wait_res = tokio::time::timeout(Duration::from_millis(1500), async_fd.writable()).await;
+                        match wait_res {
+                            Ok(Ok(mut guard)) => {
+                                let mut err_code: libc::c_int = 0;
+                                let mut err_len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+                                let getsockopt_res = unsafe {
+                                    libc::getsockopt(
+                                        async_fd.as_raw_fd(),
+                                        libc::SOL_SOCKET,
+                                        libc::SO_ERROR,
+                                        &mut err_code as *mut _ as *mut libc::c_void,
+                                        &mut err_len,
+                                    )
+                                };
+                                if getsockopt_res < 0 || err_code != 0 {
+                                    let e = if err_code != 0 {
+                                        std::io::Error::from_raw_os_error(err_code)
+                                    } else {
+                                        std::io::Error::last_os_error()
+                                    };
+                                    last_error = Some(L2capError::ConnectFailed(e));
+                                    continue;
+                                }
+                                guard.retain_ready();
+                                return Ok(Self { async_fd });
+                            }
+                            _ => {
+                                last_error = Some(L2capError::Timeout);
+                                continue;
+                            }
+                        }
+                    } else {
+                        last_error = Some(L2capError::ConnectFailed(err));
+                        continue;
+                    }
                 } else {
-                    return Err(L2capError::ConnectFailed(err));
+                    return Ok(Self { async_fd });
                 }
             }
 
-            Ok(Self { async_fd })
+            Err(last_error.unwrap_or(L2capError::Timeout))
         })
         .await
         .map_err(|_| L2capError::Timeout)?
@@ -165,7 +194,7 @@ impl AppleL2capSession {
         address: &str,
         tx_incoming: mpsc::Sender<Frame>,
     ) -> Result<Self, L2capError> {
-        let socket = Arc::new(L2capSocket::connect(address, aap::AAP_PSM, Duration::from_millis(3500)).await?);
+        let socket = Arc::new(L2capSocket::connect(address, aap::AAP_PSM, Duration::from_millis(6000)).await?);
 
         // Spawn background reader
         let reader_sock = socket.clone();
@@ -193,14 +222,19 @@ impl AppleL2capSession {
 
         // 1. Handshake
         socket.send(&aap::HANDSHAKE_RAW_BYTES).await?;
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
 
         // 2. Set Pro 2 Feature Flags (0xD7 mask)
         socket.send(&aap::SET_FEATURES_PRO2_BYTES).await?;
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
 
         // 3. Subscribe to notifications
         socket.send(&aap::subscribe_notifications_frame().encode()).await?;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        // 4. Auto-enable Single-Bud ANC so Noise Cancellation works reliably
+        // regardless of whether user wears one bud, both buds, or adjusts a bud.
+        let _ = socket.send(&aap::write_setting(SettingId::OneBudAnc as u8, 1).encode()).await;
 
         Ok(Self {
             socket,
@@ -213,6 +247,10 @@ impl AppleL2capSession {
     }
 
     pub async fn set_noise_mode(&self, mode: ListeningMode) -> Result<(), L2capError> {
+        if mode == ListeningMode::NoiseCancellation {
+            // Ensure OneBudAnc is enabled so hardware will not reject ANC if single bud is worn
+            let _ = self.set_one_bud_anc(true).await;
+        }
         self.send_frame(&aap::set_noise_control(mode)).await
     }
 
@@ -246,7 +284,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(32);
         let mac = "6C:12:70:3F:8E:AE";
         println!("Attempting L2CAP connection to {}", mac);
-        if let Ok(session) = AppleL2capSession::start(mac, tx).await {
+        if let Ok(_session) = AppleL2capSession::start(mac, tx).await {
             println!("Connected successfully to AirPods via L2CAP!");
             let timer = tokio::time::sleep(Duration::from_millis(1500));
             tokio::pin!(timer);

@@ -49,6 +49,9 @@ pub enum Commands {
     #[command(about = "Get or set in-ear / wear detection (Apple, B&W)")]
     WearSensor { action: Option<String> },
 
+    #[command(about = "Get or set smart auto-pause on ear removal (on, off)")]
+    AutoPause { action: Option<String> },
+
     #[command(about = "Get or set Conversation Awareness (AirPods Pro 2)")]
     ConvAware { action: Option<String> },
 

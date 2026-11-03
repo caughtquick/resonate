@@ -135,6 +135,21 @@ impl EarStatus {
             _ => Self::Unknown,
         }
     }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::InEar => "in_ear",
+            Self::OutOfEar => "out_of_ear",
+            Self::InCase => "in_case",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+impl std::fmt::Display for EarStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -188,6 +203,21 @@ pub struct BatteryComponent {
 pub struct InEarStatus {
     pub primary: EarStatus,
     pub secondary: EarStatus,
+}
+
+impl InEarStatus {
+    pub fn is_worn(&self) -> bool {
+        self.primary == EarStatus::InEar || self.secondary == EarStatus::InEar
+    }
+
+    pub fn in_ear_count(&self) -> usize {
+        (if self.primary == EarStatus::InEar { 1 } else { 0 })
+            + (if self.secondary == EarStatus::InEar { 1 } else { 0 })
+    }
+
+    pub fn are_both_in_case(&self) -> bool {
+        self.primary == EarStatus::InCase && self.secondary == EarStatus::InCase
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -480,10 +510,26 @@ mod tests {
         let status1 = parse_in_ear(&[0x00, 0x02]).unwrap();
         assert_eq!(status1.primary, EarStatus::InEar);
         assert_eq!(status1.secondary, EarStatus::InCase);
+        assert!(status1.is_worn());
+        assert_eq!(status1.in_ear_count(), 1);
+        assert!(!status1.are_both_in_case());
+        assert_eq!(status1.primary.as_str(), "in_ear");
+        assert_eq!(status1.secondary.as_str(), "in_case");
 
         let status2 = parse_in_ear(&[0x01, 0x00]).unwrap();
         assert_eq!(status2.primary, EarStatus::OutOfEar);
         assert_eq!(status2.secondary, EarStatus::InEar);
+        assert!(status2.is_worn());
+        assert_eq!(status2.in_ear_count(), 1);
+
+        let status_both_in = parse_in_ear(&[0x00, 0x00]).unwrap();
+        assert!(status_both_in.is_worn());
+        assert_eq!(status_both_in.in_ear_count(), 2);
+
+        let status_both_case = parse_in_ear(&[0x02, 0x02]).unwrap();
+        assert!(!status_both_case.is_worn());
+        assert_eq!(status_both_case.in_ear_count(), 0);
+        assert!(status_both_case.are_both_in_case());
 
         let status3 = parse_in_ear(&[0x99, 0x00]).unwrap();
         assert_eq!(status3.primary, EarStatus::Unknown);

@@ -16,6 +16,10 @@ pub struct ResonateState {
     pub is_charging: bool,
     pub noise_mode: String,
     pub ear_detection: bool,
+    pub auto_pause: bool,
+    pub in_ear: bool,
+    pub in_ear_primary: String,
+    pub in_ear_secondary: String,
     pub conv_aware: bool,
     pub mic_mode: String,
     pub one_bud_anc: bool,
@@ -92,6 +96,26 @@ impl ResonateDbusManager {
     #[zbus(property)]
     async fn ear_detection(&self) -> bool {
         self.manager.state.read().await.ear_detection
+    }
+
+    #[zbus(property)]
+    async fn auto_pause(&self) -> bool {
+        self.manager.state.read().await.auto_pause
+    }
+
+    #[zbus(property)]
+    async fn in_ear(&self) -> bool {
+        self.manager.state.read().await.in_ear
+    }
+
+    #[zbus(property)]
+    async fn in_ear_primary(&self) -> String {
+        self.manager.state.read().await.in_ear_primary.clone()
+    }
+
+    #[zbus(property)]
+    async fn in_ear_secondary(&self) -> String {
+        self.manager.state.read().await.in_ear_secondary.clone()
     }
 
     #[zbus(property)]
@@ -190,6 +214,17 @@ impl ResonateDbusManager {
         self.manager.handle.spawn(async move {
             mgr.set_ear_detection(enable).await
         }).await.unwrap_or(false)
+    }
+
+    async fn set_auto_pause(&self, enable: bool) -> bool {
+        let mgr = self.manager.clone();
+        self.manager.handle.spawn(async move {
+            mgr.set_auto_pause(enable).await
+        }).await.unwrap_or(false)
+    }
+
+    async fn get_auto_pause(&self) -> bool {
+        self.manager.state.read().await.auto_pause
     }
 
     async fn set_conversation_awareness(&self, enable: bool) -> bool {

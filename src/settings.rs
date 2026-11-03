@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 pub struct AppSettingsData {
     #[serde(default = "default_true")]
     pub notifications_enabled: bool,
+    #[serde(default = "default_true")]
+    pub auto_pause_enabled: bool,
     #[serde(default)]
     pub cached_case_batteries: HashMap<String, u8>,
     #[serde(default)]
@@ -21,6 +23,7 @@ impl Default for AppSettingsData {
     fn default() -> Self {
         Self {
             notifications_enabled: true,
+            auto_pause_enabled: true,
             cached_case_batteries: HashMap::new(),
             preferred_noise_modes: HashMap::new(),
         }
@@ -75,6 +78,15 @@ impl SettingsStore {
         self.data.preferred_noise_modes.insert(address.to_uppercase(), mode.to_string());
         self.save();
     }
+
+    pub fn get_auto_pause(&self) -> bool {
+        self.data.auto_pause_enabled
+    }
+
+    pub fn set_auto_pause(&mut self, enabled: bool) {
+        self.data.auto_pause_enabled = enabled;
+        self.save();
+    }
 }
 
 pub fn dirs_config_dir() -> PathBuf {
@@ -98,5 +110,10 @@ mod tests {
         let mut store = SettingsStore::load();
         store.set_cached_case_battery("6C:12:70:3F:8E:AE", 85);
         assert_eq!(store.get_cached_case_battery("6C:12:70:3F:8E:AE"), Some(85));
+
+        store.set_auto_pause(false);
+        assert!(!store.get_auto_pause());
+        store.set_auto_pause(true);
+        assert!(store.get_auto_pause());
     }
 }

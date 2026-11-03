@@ -3,11 +3,11 @@ use std::time::Duration;
 use tokio::sync::{mpsc, Mutex, RwLock};
 use zbus::Connection;
 
-use crate::audio::AudioMonitor;
+use crate::audio::{AudioMonitor, AutoPauseCoordinator};
 use crate::dbus_service::ResonateState;
 use crate::inventory::{BluetoothInventory, DeviceVendor, PairedDevice};
 use crate::notifications::NotificationService;
-use crate::protocols::aap::{self, BatteryKind, BatteryStatus, EarStatus, Frame, ListeningMode, MicSelection, Opcode, SettingId, SettingNotice};
+use crate::protocols::aap::{self, BatteryKind, BatteryStatus, Frame, ListeningMode, MicSelection, Opcode, SettingId, SettingNotice};
 use crate::protocols::sony::{SonyMDRPacket, SonyV1AutomaticPowerOff, SonyV1EqualizerPreset};
 use crate::settings::SettingsStore;
 use crate::transport::bluez::BluezGattClient;
@@ -28,6 +28,10 @@ pub fn format_state_json(s: &ResonateState) -> String {
         "noiseMode": s.noise_mode,
         "audioSink": s.audio_sink,
         "earDetection": s.ear_detection,
+        "autoPause": s.auto_pause,
+        "inEar": s.in_ear,
+        "inEarPrimary": s.in_ear_primary,
+        "inEarSecondary": s.in_ear_secondary,
         "conversationAwareness": s.conv_aware,
         "micMode": s.mic_mode,
         "oneBudAnc": s.one_bud_anc,
@@ -49,10 +53,14 @@ pub struct DeviceManager {
     pub settings: Arc<Mutex<SettingsStore>>,
     pub notifications: Arc<Mutex<NotificationService>>,
     dbus_conn: Arc<Mutex<Option<Connection>>>,
+    pub auto_pause: Arc<Mutex<AutoPauseCoordinator>>,
 }
 
 impl DeviceManager {
     pub fn new(state: Arc<RwLock<ResonateState>>, handle: tokio::runtime::Handle) -> Self {
+        let store = SettingsStore::load();
+        let auto_pause_enabled = store.data.auto_pause_enabled;
+
         Self {
             state,
             active_apple_session: Arc::new(Mutex::new(None)),
@@ -60,10 +68,19 @@ impl DeviceManager {
             active_bw_client: Arc::new(Mutex::new(None)),
             active_address: Arc::new(RwLock::new(None)),
             handle,
-            settings: Arc::new(Mutex::new(SettingsStore::load())),
+            settings: Arc::new(Mutex::new(store)),
             notifications: Arc::new(Mutex::new(NotificationService::new())),
             dbus_conn: Arc::new(Mutex::new(None)),
+            auto_pause: Arc::new(Mutex::new(AutoPauseCoordinator::new(auto_pause_enabled))),
         }
+    }
+
+    pub async fn set_auto_pause(&self, enabled: bool) -> bool {
+        self.auto_pause.lock().await.set_enabled(enabled);
+        self.settings.lock().await.set_auto_pause(enabled);
+        self.state.write().await.auto_pause = enabled;
+        self.notify_state_changed().await;
+        true
     }
 
     pub async fn set_dbus_connection(&self, conn: Connection) {
@@ -145,6 +162,13 @@ impl DeviceManager {
         *self.active_sony_session.lock().await = None;
         *self.active_bw_client.lock().await = None;
 
+        let dbus_conn = self.dbus_conn.lock().await.clone();
+        if let Some(conn) = dbus_conn.as_ref() {
+            self.auto_pause.lock().await.on_disconnect(conn).await;
+        } else {
+            self.auto_pause.lock().await.reset();
+        }
+
         let name = {
             let mut s = self.state.write().await;
             let n = s.device_name.clone();
@@ -158,6 +182,9 @@ impl DeviceManager {
             s.battery_case = -1;
             s.is_charging = false;
             s.noise_mode = "off".to_string();
+            s.in_ear = false;
+            s.in_ear_primary = String::new();
+            s.in_ear_secondary = String::new();
             n
         };
 
@@ -184,8 +211,40 @@ impl DeviceManager {
                 other => return (false, format!("Unsupported Apple ANC mode: '{}'. Use off, anc, ambient, or adaptive.", other)),
             };
 
+            // Check if earbuds are worn in ear
+            let is_worn = self.state.read().await.in_ear;
+            let ear_detect_enabled = self.state.read().await.ear_detection;
+            if mode == ListeningMode::NoiseCancellation && ear_detect_enabled && !is_worn {
+                // If buds are out of the ear, record as preferred mode so when they are put on, ANC is enabled automatically.
+                if let Some(addr) = self.active_address.read().await.as_deref() {
+                    self.settings.lock().await.set_preferred_noise_mode(addr, &mode_norm);
+                }
+                return (false, "AirPods are not in your ears. Put them in to use Noise Cancellation.".to_string());
+            }
+
             if let Err(e) = session.set_noise_mode(mode).await {
+                // Mark session as dead if socket broken so monitoring loop reconnects
+                *self.active_apple_session.lock().await = None;
                 return (false, format!("Failed to send ANC command: {}", e));
+            }
+
+            if let Some(addr) = self.active_address.read().await.as_deref() {
+                self.settings.lock().await.set_preferred_noise_mode(addr, &mode_norm);
+            }
+
+            // Wait up to 350ms for device confirmation (SettingNotice 0x0D echo from AirPods)
+            let deadline = tokio::time::Instant::now() + Duration::from_millis(350);
+            while tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                if self.state.read().await.noise_mode == mode_norm {
+                    return (true, format!("ANC mode set to {}", mode_norm));
+                }
+            }
+
+            // If hardware has not confirmed and earbuds are not in ear, do not leave state in a false "anc" mode
+            let current = self.state.read().await.noise_mode.clone();
+            if current != mode_norm && ear_detect_enabled && !is_worn {
+                return (false, "AirPods did not activate ANC (earbuds must be in your ears)".to_string());
             }
 
             self.state.write().await.noise_mode = mode_norm.clone();
@@ -443,8 +502,9 @@ impl DeviceManager {
                         *self.active_apple_session.lock().await = Some(session);
                         *self.active_address.write().await = Some(address.clone());
 
-                        // Check cached case battery from settings
+                        // Check cached case battery and preferred noise mode from settings
                         let cached_case = self.settings.lock().await.get_cached_case_battery(&address);
+                        let preferred_mode = self.settings.lock().await.get_preferred_noise_mode(&address);
 
                         {
                             let mut s = self.state.write().await;
@@ -452,11 +512,28 @@ impl DeviceManager {
                             s.connection_state = "connected".to_string();
                             s.device_name = name.clone();
                             s.vendor = "Apple".to_string();
+                            s.one_bud_anc = true;
                             if let Some(p) = device.battery_percent {
                                 s.battery_percent = p as i32;
                             }
                             if let Some(c) = cached_case {
                                 s.battery_case = c as i32;
+                            }
+                        }
+
+                        // Restore preferred noise mode if configured
+                        if let Some(pref) = preferred_mode {
+                            if let Some(session) = self.active_apple_session.lock().await.as_ref() {
+                                let target_mode = match pref.as_str() {
+                                    "off" => Some(ListeningMode::Off),
+                                    "anc" | "nc" | "on" => Some(ListeningMode::NoiseCancellation),
+                                    "ambient" | "transparency" => Some(ListeningMode::Transparency),
+                                    "adaptive" => Some(ListeningMode::Adaptive),
+                                    _ => None,
+                                };
+                                if let Some(m) = target_mode {
+                                    let _ = session.set_noise_mode(m).await;
+                                }
                             }
                         }
 
@@ -473,6 +550,8 @@ impl DeviceManager {
                         let settings_clone = self.settings.clone();
                         let notif_clone = self.notifications.clone();
                         let dbus_conn_clone = self.dbus_conn.clone();
+                        let auto_pause_clone = self.auto_pause.clone();
+                        let active_apple_session_clone = self.active_apple_session.clone();
                         let expected_addr = address.clone();
                         let dev_name = name.clone();
 
@@ -608,8 +687,42 @@ impl DeviceManager {
 
                                     Some(Opcode::EarDetection) => {
                                         if let Some(in_ear) = aap::parse_in_ear(&frame.payload) {
-                                            let mut s = state_clone.write().await;
-                                            s.ear_detection = in_ear.primary == EarStatus::InEar || in_ear.secondary == EarStatus::InEar;
+                                            let is_wearing = in_ear.is_worn();
+                                            let was_wearing = {
+                                                let s = state_clone.read().await;
+                                                s.in_ear
+                                            };
+                                            {
+                                                let mut s = state_clone.write().await;
+                                                s.in_ear = is_wearing;
+                                                s.in_ear_primary = in_ear.primary.as_str().to_string();
+                                                s.in_ear_secondary = in_ear.secondary.as_str().to_string();
+                                            }
+
+                                            let dbus_conn = dbus_conn_clone.lock().await.clone();
+                                            if let Some(conn) = dbus_conn.as_ref() {
+                                                auto_pause_clone.lock().await.on_ear_status_update(in_ear, conn).await;
+                                            }
+
+                                            // Auto-restore preferred ANC / listening mode when putting earbuds in!
+                                            if !was_wearing && is_wearing {
+                                                if let Some(pref) = settings_clone.lock().await.get_preferred_noise_mode(&expected_addr) {
+                                                    let target_mode = match pref.as_str() {
+                                                        "off" => Some(ListeningMode::Off),
+                                                        "anc" | "nc" | "on" => Some(ListeningMode::NoiseCancellation),
+                                                        "ambient" | "transparency" => Some(ListeningMode::Transparency),
+                                                        "adaptive" => Some(ListeningMode::Adaptive),
+                                                        _ => None,
+                                                    };
+                                                    if let Some(m) = target_mode {
+                                                        if let Some(session) = active_apple_session_clone.lock().await.as_ref() {
+                                                            let _ = session.set_noise_mode(m).await;
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            let s = state_clone.read().await;
                                             let json = format_state_json(&s);
                                             drop(s);
                                             if let Some(conn) = dbus_conn_clone.lock().await.as_ref() {
@@ -627,6 +740,9 @@ impl DeviceManager {
                                     _ => {}
                                 }
                             }
+
+                            println!("Apple AAP L2CAP session ended for {}", expected_addr);
+                            *active_apple_session_clone.lock().await = None;
                         });
 
                         (true, format!("Successfully connected to {} ({})", name, address))
@@ -707,6 +823,7 @@ impl DeviceManager {
                         let expected_addr = address.clone();
                         let dev_name = name.clone();
 
+                        let active_sony_session_clone = self.active_sony_session.clone();
                         tokio::spawn(async move {
                             while let Some(pkt) = rx.recv().await {
                                 if active_addr_clone.read().await.as_deref() != Some(&expected_addr) {
@@ -737,6 +854,9 @@ impl DeviceManager {
                                     }
                                 }
                             }
+
+                            println!("Sony MDR session ended for {}", expected_addr);
+                            *active_sony_session_clone.lock().await = None;
                         });
 
                         (true, format!("Connected to Sony {} ({})", name, address))
@@ -794,6 +914,19 @@ impl DeviceManager {
                     println!("Headphone switched to: {} ({})", dev.name, dev.address);
                     self.disconnect_device().await;
                     self.connect_vendor_session(dev).await;
+                }
+                (Some(addr), Some(dev)) if dev.address == addr => {
+                    // Check if the vendor control session has dropped while BlueZ link is still connected
+                    let session_alive = match dev.vendor {
+                        DeviceVendor::Apple => self.active_apple_session.lock().await.is_some(),
+                        DeviceVendor::Sony => self.active_sony_session.lock().await.is_some(),
+                        DeviceVendor::BowersWilkins => self.active_bw_client.lock().await.is_some(),
+                        _ => true,
+                    };
+                    if !session_alive {
+                        println!("Vendor control session for {} ({}) dropped while Bluetooth connected — reconnecting...", dev.name, dev.address);
+                        self.connect_vendor_session(dev).await;
+                    }
                 }
                 (Some(addr), None) => {
                     println!("Headphone ({}) disconnected from Bluetooth.", addr);

@@ -34,15 +34,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         Commands::Daemon { action } => {
             if let Some(act) = action {
-                if act == "status" {
-                    println!("Resonate daemon is active.");
-                    return Ok(());
-                } else if act == "stop" {
-                    println!("Stopping daemon...");
-                    return Ok(());
-                } else if act == "install" {
-                    let exe_path = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("/usr/local/bin/resonate"));
-                    let service_content = format!(
+                match act.as_str() {
+                    "status" => {
+                        let _ = std::process::Command::new("systemctl")
+                            .args(["--user", "status", "resonate.service"])
+                            .status();
+                        return Ok(());
+                    }
+                    "start" => {
+                        println!("Starting Resonate user service...");
+                        let _ = std::process::Command::new("systemctl")
+                            .args(["--user", "start", "resonate.service"])
+                            .status();
+                        return Ok(());
+                    }
+                    "stop" => {
+                        println!("Stopping Resonate user service...");
+                        let _ = std::process::Command::new("systemctl")
+                            .args(["--user", "stop", "resonate.service"])
+                            .status();
+                        return Ok(());
+                    }
+                    "restart" => {
+                        println!("Restarting Resonate user service...");
+                        let _ = std::process::Command::new("systemctl")
+                            .args(["--user", "restart", "resonate.service"])
+                            .status();
+                        return Ok(());
+                    }
+                    "install" => {
+                        let home = std::env::var("HOME").unwrap_or_default();
+                        let cargo_bin = format!("{}/.cargo/bin/resonate", home);
+                        let exec_target = if std::path::Path::new(&cargo_bin).exists() {
+                            "%h/.cargo/bin/resonate".to_string()
+                        } else {
+                            std::env::current_exe()
+                                .map(|p| p.display().to_string())
+                                .unwrap_or_else(|_| "%h/.cargo/bin/resonate".to_string())
+                        };
+
+                        let service_content = format!(
 r#"[Unit]
 Description=Resonate Bluetooth Headphone Daemon
 After=bluetooth.target sound.target
@@ -55,30 +86,43 @@ RestartSec=3
 
 [Install]
 WantedBy=default.target
-"#, exe_path.display());
-                    let user_systemd_dir = resonate::settings::dirs_config_dir().join("systemd").join("user");
-                    let _ = std::fs::create_dir_all(&user_systemd_dir);
-                    let service_file = user_systemd_dir.join("resonate.service");
-                    match std::fs::write(&service_file, service_content) {
-                        Ok(_) => {
-                            println!("Systemd user service installed to: {}", service_file.display());
-                            println!("To enable and start Resonate automatically on login, run:");
-                            println!("  systemctl --user daemon-reload");
-                            println!("  systemctl --user enable --now resonate.service");
+"#, exec_target);
+
+                        let user_systemd_dir = resonate::settings::dirs_config_dir().join("systemd").join("user");
+                        let _ = std::fs::create_dir_all(&user_systemd_dir);
+                        let service_file = user_systemd_dir.join("resonate.service");
+                        match std::fs::write(&service_file, service_content) {
+                            Ok(_) => {
+                                println!("Systemd user service installed to: {}", service_file.display());
+                                println!("Enabling and starting service via systemctl --user...");
+                                let _ = std::process::Command::new("systemctl")
+                                    .args(["--user", "daemon-reload"])
+                                    .status();
+                                let _ = std::process::Command::new("systemctl")
+                                    .args(["--user", "enable", "--now", "resonate.service"])
+                                    .status();
+                                println!("Resonate daemon is now installed and managed by systemd!");
+                            }
+                            Err(e) => eprintln!("Failed to write systemd service file: {}", e),
                         }
-                        Err(e) => eprintln!("Failed to install systemd service: {}", e),
+                        return Ok(());
                     }
-                    return Ok(());
-                } else if act == "uninstall" {
-                    let service_file = resonate::settings::dirs_config_dir().join("systemd").join("user").join("resonate.service");
-                    if service_file.exists() {
-                        let _ = std::fs::remove_file(&service_file);
-                        println!("Removed {}", service_file.display());
-                        println!("Run: systemctl --user daemon-reload");
-                    } else {
-                        println!("No service file found at {}", service_file.display());
+                    "uninstall" => {
+                        println!("Disabling and stopping Resonate service...");
+                        let _ = std::process::Command::new("systemctl")
+                            .args(["--user", "disable", "--now", "resonate.service"])
+                            .status();
+                        let service_file = resonate::settings::dirs_config_dir().join("systemd").join("user").join("resonate.service");
+                        if service_file.exists() {
+                            let _ = std::fs::remove_file(&service_file);
+                        }
+                        let _ = std::process::Command::new("systemctl")
+                            .args(["--user", "daemon-reload"])
+                            .status();
+                        println!("Resonate systemd service uninstalled successfully.");
+                        return Ok(());
                     }
-                    return Ok(());
+                    _ => {}
                 }
             }
 

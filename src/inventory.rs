@@ -79,11 +79,10 @@ impl BluetoothInventory {
                 let uuids = get_string_vec_prop(dev_props, "UUIDs").unwrap_or_default();
 
                 let mut battery_percent = None;
-                if let Some(batt_props) = interfaces.get("org.bluez.Battery1") {
-                    if let Some(p) = get_u8_prop(batt_props, "Percentage") {
+                if let Some(batt_props) = interfaces.get("org.bluez.Battery1")
+                    && let Some(p) = get_u8_prop(batt_props, "Percentage") {
                         battery_percent = Some(p);
                     }
-                }
 
                 let vendor = identify_vendor(&name, modalias.as_deref(), &uuids);
                 let mut model_name = None;
@@ -100,9 +99,7 @@ impl BluetoothInventory {
                         AppleModel::from_name(&name)
                     };
                     model_name = Some(apple_model.display_name().to_string());
-                } else if vendor == DeviceVendor::BowersWilkins {
-                    model_name = Some(name.clone());
-                } else if vendor == DeviceVendor::Sony {
+                } else if vendor == DeviceVendor::BowersWilkins || vendor == DeviceVendor::Sony {
                     model_name = Some(name.clone());
                 }
 

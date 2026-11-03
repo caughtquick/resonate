@@ -52,11 +52,10 @@ impl NotificationService {
         self.low_battery_notified.insert(device.to_string(), HashSet::new());
 
         let mut body = format!("Connected ({})", vendor);
-        if let Some(pct) = battery {
-            if pct >= 0 {
+        if let Some(pct) = battery
+            && pct >= 0 {
                 body.push_str(&format!(" • {}% battery", pct));
             }
-        }
 
         Self::send(device, &body, "audio-headphones", 4000).await;
     }
@@ -70,7 +69,7 @@ impl NotificationService {
     }
 
     pub async fn check_battery(&mut self, device: &str, percent: i32) {
-        if percent < 0 || percent > 100 {
+        if !(0..=100).contains(&percent) {
             return;
         }
         let notified = self.low_battery_notified.entry(device.to_string()).or_default();
@@ -94,5 +93,11 @@ impl NotificationService {
         } else if percent > 25 {
             notified.clear();
         }
+    }
+}
+
+impl Default for NotificationService {
+    fn default() -> Self {
+        Self::new()
     }
 }

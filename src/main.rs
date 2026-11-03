@@ -208,21 +208,19 @@ WantedBy=default.target
         Commands::Devices => {
             // First check if daemon is running and has device list
             let mut output_json: Option<String> = None;
-            if let Ok(conn) = zbus::Connection::session().await {
-                if let Ok(proxy) = zbus::Proxy::new(
+            if let Ok(conn) = zbus::Connection::session().await
+                && let Ok(proxy) = zbus::Proxy::new(
                     &conn,
                     "org.headbridge",
                     "/org/headbridge",
                     "org.headbridge.Manager",
                 ).await {
                     let res: Result<String, _> = proxy.call("ListDevices", &()).await;
-                    if let Ok(json_str) = res {
-                        if json_str != "[]" {
+                    if let Ok(json_str) = res
+                        && json_str != "[]" {
                             output_json = Some(json_str);
                         }
-                    }
                 }
-            }
 
             // Direct BlueZ discovery fallback if daemon not active or returned empty
             let devices = if let Some(j) = output_json {
@@ -309,8 +307,8 @@ WantedBy=default.target
         }
 
         Commands::Disconnect => {
-            if let Ok(conn) = zbus::Connection::session().await {
-                if let Ok(proxy) = zbus::Proxy::new(
+            if let Ok(conn) = zbus::Connection::session().await
+                && let Ok(proxy) = zbus::Proxy::new(
                     &conn,
                     "org.headbridge",
                     "/org/headbridge",
@@ -319,20 +317,19 @@ WantedBy=default.target
                     let res: Result<bool, _> = proxy.call("Disconnect", &()).await;
                     if let Ok(true) = res {
                         if cli.json {
-                            println!("{}", r#"{"disconnected":true}"#);
+                            println!("{{\"disconnected\":true}}");
                         } else {
                             println!("Disconnected active session.");
                         }
                         return Ok(());
                     }
                 }
-            }
             eprintln!("Resonate daemon is not running or failed to disconnect.");
         }
 
         Commands::Status => {
-            if let Ok(conn) = zbus::Connection::session().await {
-                if let Ok(proxy) = zbus::Proxy::new(
+            if let Ok(conn) = zbus::Connection::session().await
+                && let Ok(proxy) = zbus::Proxy::new(
                     &conn,
                     "org.headbridge",
                     "/org/headbridge",
@@ -388,7 +385,6 @@ WantedBy=default.target
                         return Ok(());
                     }
                 }
-            }
 
             if cli.json {
                 println!(r#"{{"error":"Resonate daemon is not running","connected":false}}"#);
@@ -398,16 +394,16 @@ WantedBy=default.target
         }
 
         Commands::Battery => {
-            if let Ok(conn) = zbus::Connection::session().await {
-                if let Ok(proxy) = zbus::Proxy::new(
+            if let Ok(conn) = zbus::Connection::session().await
+                && let Ok(proxy) = zbus::Proxy::new(
                     &conn,
                     "org.headbridge",
                     "/org/headbridge",
                     "org.headbridge.Manager",
                 ).await {
                     let status_res: Result<String, _> = proxy.call("GetStatus", &()).await;
-                    if let Ok(status) = status_res {
-                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&status) {
+                    if let Ok(status) = status_res
+                        && let Ok(val) = serde_json::from_str::<serde_json::Value>(&status) {
                             if cli.json {
                                 println!("{}", serde_json::to_string_pretty(&serde_json::json!({
                                     "percent": val["batteryPercent"],
@@ -432,15 +428,13 @@ WantedBy=default.target
                             }
                             return Ok(());
                         }
-                    }
                 }
-            }
             eprintln!("Resonate daemon is not running.");
         }
 
         Commands::Anc { mode } => {
-            if let Ok(conn) = zbus::Connection::session().await {
-                if let Ok(proxy) = zbus::Proxy::new(
+            if let Ok(conn) = zbus::Connection::session().await
+                && let Ok(proxy) = zbus::Proxy::new(
                     &conn,
                     "org.headbridge",
                     "/org/headbridge",
@@ -479,13 +473,12 @@ WantedBy=default.target
                     }
                     return Ok(());
                 }
-            }
             eprintln!("Resonate daemon is not running.");
         }
 
         Commands::ConvAware { action } => {
-            if let Ok(conn) = zbus::Connection::session().await {
-                if let Ok(proxy) = zbus::Proxy::new(
+            if let Ok(conn) = zbus::Connection::session().await
+                && let Ok(proxy) = zbus::Proxy::new(
                     &conn,
                     "org.headbridge",
                     "/org/headbridge",
@@ -504,13 +497,12 @@ WantedBy=default.target
                     }
                     return Ok(());
                 }
-            }
             eprintln!("Resonate daemon is not running.");
         }
 
         Commands::WearSensor { action } => {
-            if let Ok(conn) = zbus::Connection::session().await {
-                if let Ok(proxy) = zbus::Proxy::new(
+            if let Ok(conn) = zbus::Connection::session().await
+                && let Ok(proxy) = zbus::Proxy::new(
                     &conn,
                     "org.headbridge",
                     "/org/headbridge",
@@ -529,13 +521,12 @@ WantedBy=default.target
                     }
                     return Ok(());
                 }
-            }
             eprintln!("Resonate daemon is not running.");
         }
 
         Commands::AutoPause { action } => {
-            if let Ok(conn) = zbus::Connection::session().await {
-                if let Ok(proxy) = zbus::Proxy::new(
+            if let Ok(conn) = zbus::Connection::session().await
+                && let Ok(proxy) = zbus::Proxy::new(
                     &conn,
                     "org.headbridge",
                     "/org/headbridge",
@@ -565,7 +556,6 @@ WantedBy=default.target
                     }
                     return Ok(());
                 }
-            }
 
             // Fallback when daemon is not running: read/write settings file directly
             let mut store = resonate::settings::SettingsStore::load();
@@ -593,8 +583,8 @@ WantedBy=default.target
         }
 
         Commands::Mic { mode } => {
-            if let Ok(conn) = zbus::Connection::session().await {
-                if let Ok(proxy) = zbus::Proxy::new(
+            if let Ok(conn) = zbus::Connection::session().await
+                && let Ok(proxy) = zbus::Proxy::new(
                     &conn,
                     "org.headbridge",
                     "/org/headbridge",
@@ -609,13 +599,12 @@ WantedBy=default.target
                     }
                     return Ok(());
                 }
-            }
             eprintln!("Resonate daemon is not running.");
         }
 
         Commands::OneBudAnc { action } => {
-            if let Ok(conn) = zbus::Connection::session().await {
-                if let Ok(proxy) = zbus::Proxy::new(
+            if let Ok(conn) = zbus::Connection::session().await
+                && let Ok(proxy) = zbus::Proxy::new(
                     &conn,
                     "org.headbridge",
                     "/org/headbridge",
@@ -634,13 +623,12 @@ WantedBy=default.target
                     }
                     return Ok(());
                 }
-            }
             eprintln!("Resonate daemon is not running.");
         }
 
         Commands::Chime { volume } => {
-            if let Ok(conn) = zbus::Connection::session().await {
-                if let Ok(proxy) = zbus::Proxy::new(
+            if let Ok(conn) = zbus::Connection::session().await
+                && let Ok(proxy) = zbus::Proxy::new(
                     &conn,
                     "org.headbridge",
                     "/org/headbridge",
@@ -655,13 +643,12 @@ WantedBy=default.target
                     }
                     return Ok(());
                 }
-            }
             eprintln!("Resonate daemon is not running.");
         }
 
         Commands::AmbientLevel { level } => {
-            if let Ok(conn) = zbus::Connection::session().await {
-                if let Ok(proxy) = zbus::Proxy::new(
+            if let Ok(conn) = zbus::Connection::session().await
+                && let Ok(proxy) = zbus::Proxy::new(
                     &conn,
                     "org.headbridge",
                     "/org/headbridge",
@@ -676,13 +663,12 @@ WantedBy=default.target
                     }
                     return Ok(());
                 }
-            }
             eprintln!("Resonate daemon is not running.");
         }
 
         Commands::Eq { args } => {
-            if let Ok(conn) = zbus::Connection::session().await {
-                if let Ok(proxy) = zbus::Proxy::new(
+            if let Ok(conn) = zbus::Connection::session().await
+                && let Ok(proxy) = zbus::Proxy::new(
                     &conn,
                     "org.headbridge",
                     "/org/headbridge",
@@ -696,13 +682,12 @@ WantedBy=default.target
                     }
                     return Ok(());
                 }
-            }
             eprintln!("Resonate daemon is not running.");
         }
 
         Commands::Standby { val } => {
-            if let Ok(conn) = zbus::Connection::session().await {
-                if let Ok(proxy) = zbus::Proxy::new(
+            if let Ok(conn) = zbus::Connection::session().await
+                && let Ok(proxy) = zbus::Proxy::new(
                     &conn,
                     "org.headbridge",
                     "/org/headbridge",
@@ -717,13 +702,12 @@ WantedBy=default.target
                     }
                     return Ok(());
                 }
-            }
             eprintln!("Resonate daemon is not running.");
         }
 
         Commands::Button { action } => {
-            if let Ok(conn) = zbus::Connection::session().await {
-                if let Ok(proxy) = zbus::Proxy::new(
+            if let Ok(conn) = zbus::Connection::session().await
+                && let Ok(proxy) = zbus::Proxy::new(
                     &conn,
                     "org.headbridge",
                     "/org/headbridge",
@@ -737,13 +721,12 @@ WantedBy=default.target
                     }
                     return Ok(());
                 }
-            }
             eprintln!("Resonate daemon is not running.");
         }
 
         Commands::Touch { action } => {
-            if let Ok(conn) = zbus::Connection::session().await {
-                if let Ok(proxy) = zbus::Proxy::new(
+            if let Ok(conn) = zbus::Connection::session().await
+                && let Ok(proxy) = zbus::Proxy::new(
                     &conn,
                     "org.headbridge",
                     "/org/headbridge",
@@ -762,13 +745,12 @@ WantedBy=default.target
                     }
                     return Ok(());
                 }
-            }
             eprintln!("Resonate daemon is not running.");
         }
 
         Commands::Dsee { action } => {
-            if let Ok(conn) = zbus::Connection::session().await {
-                if let Ok(proxy) = zbus::Proxy::new(
+            if let Ok(conn) = zbus::Connection::session().await
+                && let Ok(proxy) = zbus::Proxy::new(
                     &conn,
                     "org.headbridge",
                     "/org/headbridge",
@@ -787,13 +769,12 @@ WantedBy=default.target
                     }
                     return Ok(());
                 }
-            }
             eprintln!("Resonate daemon is not running.");
         }
 
         Commands::Optimize { action } => {
-            if let Ok(conn) = zbus::Connection::session().await {
-                if let Ok(proxy) = zbus::Proxy::new(
+            if let Ok(conn) = zbus::Connection::session().await
+                && let Ok(proxy) = zbus::Proxy::new(
                     &conn,
                     "org.headbridge",
                     "/org/headbridge",
@@ -807,7 +788,6 @@ WantedBy=default.target
                     }
                     return Ok(());
                 }
-            }
             eprintln!("Resonate daemon is not running.");
         }
     }

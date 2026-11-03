@@ -65,8 +65,8 @@ impl BluezGattClient {
                 continue;
             }
 
-            if let Some(gatt_props) = ifaces.get("org.bluez.GattCharacteristic1") {
-                if let Some(uuid_val) = gatt_props.get("UUID") {
+            if let Some(gatt_props) = ifaces.get("org.bluez.GattCharacteristic1")
+                && let Some(uuid_val) = gatt_props.get("UUID") {
                     let uuid_res: Result<&str, _> = uuid_val.try_into();
                     if let Ok(u) = uuid_res {
                         let u_low = u.to_lowercase();
@@ -79,7 +79,6 @@ impl BluezGattClient {
                         }
                     }
                 }
-            }
         }
 
         if let (Some(req), Some(resp)) = (req_path, resp_path) {

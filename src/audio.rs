@@ -36,8 +36,8 @@ pub struct MprisController;
 impl MprisController {
     /// Queries the session D-Bus for all active MPRIS media players (org.mpris.MediaPlayer2.*)
     pub async fn get_mpris_players(conn: &Connection) -> Vec<String> {
-        if let Ok(dbus) = DBusProxy::new(conn).await {
-            if let Ok(names) = dbus.list_names().await {
+        if let Ok(dbus) = DBusProxy::new(conn).await
+            && let Ok(names) = dbus.list_names().await {
                 return names
                     .into_iter()
                     .filter_map(|name| {
@@ -50,7 +50,6 @@ impl MprisController {
                     })
                     .collect();
             }
-        }
         Vec::new()
     }
 
@@ -99,24 +98,20 @@ impl MprisController {
         let mut paused = Vec::new();
         let players = Self::get_mpris_players(conn).await;
         for player in players {
-            if let Some(status) = Self::get_playback_status(conn, &player).await {
-                if status.eq_ignore_ascii_case("Playing") {
-                    if Self::pause_player(conn, &player).await {
+            if let Some(status) = Self::get_playback_status(conn, &player).await
+                && status.eq_ignore_ascii_case("Playing")
+                    && Self::pause_player(conn, &player).await {
                         paused.push(player);
                     }
-                }
-            }
         }
 
         // Fallback: if playerctl is installed and playing, use it if no players were found above
-        if paused.is_empty() {
-            if let Ok(status) = Command::new("playerctl").arg("status").output().await {
-                if String::from_utf8_lossy(&status.stdout).trim().eq_ignore_ascii_case("Playing") {
+        if paused.is_empty()
+            && let Ok(status) = Command::new("playerctl").arg("status").output().await
+                && String::from_utf8_lossy(&status.stdout).trim().eq_ignore_ascii_case("Playing") {
                     let _ = Command::new("playerctl").arg("pause").status().await;
                     paused.push("playerctl".to_string());
                 }
-            }
-        }
 
         paused
     }
@@ -126,19 +121,17 @@ impl MprisController {
         let mut resumed = 0;
         for player in players {
             if player == "playerctl" {
-                if let Ok(status) = Command::new("playerctl").arg("play").status().await {
-                    if status.success() {
+                if let Ok(status) = Command::new("playerctl").arg("play").status().await
+                    && status.success() {
                         resumed += 1;
                     }
-                }
             } else {
                 // If the player is already playing, don't re-trigger
                 if let Some(status) = Self::get_playback_status(conn, player).await {
-                    if !status.eq_ignore_ascii_case("Playing") {
-                        if Self::play_player(conn, player).await {
+                    if !status.eq_ignore_ascii_case("Playing")
+                        && Self::play_player(conn, player).await {
                             resumed += 1;
                         }
-                    }
                 } else if Self::play_player(conn, player).await {
                     resumed += 1;
                 }
@@ -220,7 +213,7 @@ impl AutoPauseCoordinator {
         } else if current_count > prev {
             // Earbud inserted / returned!
             if !self.paused_players.is_empty() {
-                let can_resume = self.paused_at.map_or(false, |t| t.elapsed() <= self.max_resume_delay);
+                let can_resume = self.paused_at.is_some_and(|t| t.elapsed() <= self.max_resume_delay);
                 if can_resume {
                     action = AutoPauseAction::Resume;
                 }

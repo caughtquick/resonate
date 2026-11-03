@@ -138,11 +138,10 @@ impl DeviceManager {
             return (false, format!("Device '{}' ({}) is not a supported headphone", device.name, device.address));
         }
 
-        if let Some(current) = self.active_address.read().await.as_deref() {
-            if current == device.address && self.state.read().await.connected {
+        if let Some(current) = self.active_address.read().await.as_deref()
+            && current == device.address && self.state.read().await.connected {
                 return (true, format!("Already connected to {} ({})", device.name, device.address));
             }
-        }
 
         // 1. Ensure connected in BlueZ
         if !device.connected {
@@ -188,11 +187,10 @@ impl DeviceManager {
             n
         };
 
-        if let Some(_) = old_addr {
-            if !name.is_empty() {
+        if old_addr.is_some()
+            && !name.is_empty() {
                 self.notifications.lock().await.notify_disconnected(&name).await;
             }
-        }
 
         self.notify_state_changed().await;
         true
@@ -241,14 +239,15 @@ impl DeviceManager {
                 }
             }
 
-            // If hardware has not confirmed and earbuds are not in ear, do not leave state in a false "anc" mode
+            // If hardware has not confirmed, do not falsely overwrite internal state. Keep current state.
             let current = self.state.read().await.noise_mode.clone();
-            if current != mode_norm && ear_detect_enabled && !is_worn {
-                return (false, "AirPods did not activate ANC (earbuds must be in your ears)".to_string());
+            if current != mode_norm {
+                if ear_detect_enabled && !is_worn {
+                    return (false, "AirPods did not activate ANC (earbuds must be in your ears)".to_string());
+                }
+                return (false, format!("AirPods did not confirm ANC mode change within timeout (currently {})", current));
             }
 
-            self.state.write().await.noise_mode = mode_norm.clone();
-            self.notify_state_changed().await;
             return (true, format!("ANC mode set to {}", mode_norm));
         }
 
@@ -305,20 +304,18 @@ impl DeviceManager {
                 "bass" => Some(SonyV1EqualizerPreset::BassBoost),
                 "speech" => Some(SonyV1EqualizerPreset::Speech),
                 _ => None,
-            } {
-                if session.set_equalizer_preset(preset).await.is_ok() {
+            }
+                && session.set_equalizer_preset(preset).await.is_ok() {
                     self.state.write().await.equalizer_preset = args.to_string();
                     return (true, format!("Sony Equalizer preset set to {}", args));
                 }
-            }
 
             // Or parse comma-separated bands: "0,1,2,0,-1,3"
             let values: Vec<i32> = args.split([',', ' ']).filter_map(|s| s.parse().ok()).collect();
-            if !values.is_empty() {
-                if session.set_equalizer_bands(&values).await.is_ok() {
+            if !values.is_empty()
+                && session.set_equalizer_bands(&values).await.is_ok() {
                     return (true, format!("Sony Equalizer custom bands applied: {:?}", values));
                 }
-            }
         }
 
         // B&W: parse bass and treble: "bass:2 treble:1" or "2 1"
@@ -341,12 +338,11 @@ impl DeviceManager {
         let minutes: i32 = val.parse().unwrap_or(15);
 
         // B&W
-        if let Some(client) = self.active_bw_client.lock().await.as_ref() {
-            if client.set_standby(minutes).await.is_ok() {
+        if let Some(client) = self.active_bw_client.lock().await.as_ref()
+            && client.set_standby(minutes).await.is_ok() {
                 self.state.write().await.standby_minutes = minutes;
                 return true;
             }
-        }
 
         // Sony
         if let Some(session) = self.active_sony_session.lock().await.as_ref() {
@@ -381,22 +377,20 @@ impl DeviceManager {
     }
 
     pub async fn set_touch_sensor(&self, enabled: bool) -> bool {
-        if let Some(session) = self.active_sony_session.lock().await.as_ref() {
-            if session.set_touch_sensor(enabled).await.is_ok() {
+        if let Some(session) = self.active_sony_session.lock().await.as_ref()
+            && session.set_touch_sensor(enabled).await.is_ok() {
                 self.state.write().await.touch_sensor = enabled;
                 return true;
             }
-        }
         false
     }
 
     pub async fn set_dsee(&self, enabled: bool) -> bool {
-        if let Some(session) = self.active_sony_session.lock().await.as_ref() {
-            if session.set_dsee(enabled).await.is_ok() {
+        if let Some(session) = self.active_sony_session.lock().await.as_ref()
+            && session.set_dsee(enabled).await.is_ok() {
                 self.state.write().await.dsee = enabled;
                 return true;
             }
-        }
         false
     }
 
@@ -412,31 +406,28 @@ impl DeviceManager {
 
     pub async fn set_conversation_awareness(&self, enabled: bool) -> bool {
         let session_guard = self.active_apple_session.lock().await;
-        if let Some(session) = session_guard.as_ref() {
-            if session.set_conversation_awareness(enabled).await.is_ok() {
+        if let Some(session) = session_guard.as_ref()
+            && session.set_conversation_awareness(enabled).await.is_ok() {
                 self.state.write().await.conv_aware = enabled;
                 return true;
             }
-        }
         false
     }
 
     pub async fn set_ear_detection(&self, enabled: bool) -> bool {
         // Apple
-        if let Some(session) = self.active_apple_session.lock().await.as_ref() {
-            if session.set_ear_detection(enabled).await.is_ok() {
+        if let Some(session) = self.active_apple_session.lock().await.as_ref()
+            && session.set_ear_detection(enabled).await.is_ok() {
                 self.state.write().await.ear_detection = enabled;
                 return true;
             }
-        }
 
         // B&W
-        if let Some(client) = self.active_bw_client.lock().await.as_ref() {
-            if client.set_wear_sensor(enabled).await.is_ok() {
+        if let Some(client) = self.active_bw_client.lock().await.as_ref()
+            && client.set_wear_sensor(enabled).await.is_ok() {
                 self.state.write().await.ear_detection = enabled;
                 return true;
             }
-        }
 
         false
     }
@@ -450,34 +441,31 @@ impl DeviceManager {
         };
 
         let session_guard = self.active_apple_session.lock().await;
-        if let Some(session) = session_guard.as_ref() {
-            if session.set_mic_mode(mode).await.is_ok() {
+        if let Some(session) = session_guard.as_ref()
+            && session.set_mic_mode(mode).await.is_ok() {
                 self.state.write().await.mic_mode = mode_str.to_string();
                 return true;
             }
-        }
         false
     }
 
     pub async fn set_one_bud_anc(&self, enabled: bool) -> bool {
         let session_guard = self.active_apple_session.lock().await;
-        if let Some(session) = session_guard.as_ref() {
-            if session.set_one_bud_anc(enabled).await.is_ok() {
+        if let Some(session) = session_guard.as_ref()
+            && session.set_one_bud_anc(enabled).await.is_ok() {
                 self.state.write().await.one_bud_anc = enabled;
                 return true;
             }
-        }
         false
     }
 
     pub async fn set_chime_volume(&self, vol: u8) -> bool {
         let session_guard = self.active_apple_session.lock().await;
-        if let Some(session) = session_guard.as_ref() {
-            if session.set_chime_volume(vol).await.is_ok() {
+        if let Some(session) = session_guard.as_ref()
+            && session.set_chime_volume(vol).await.is_ok() {
                 self.state.write().await.chime_volume = vol as i32;
                 return true;
             }
-        }
         false
     }
 
@@ -522,8 +510,8 @@ impl DeviceManager {
                         }
 
                         // Restore preferred noise mode if configured
-                        if let Some(pref) = preferred_mode {
-                            if let Some(session) = self.active_apple_session.lock().await.as_ref() {
+                        if let Some(pref) = preferred_mode
+                            && let Some(session) = self.active_apple_session.lock().await.as_ref() {
                                 let target_mode = match pref.as_str() {
                                     "off" => Some(ListeningMode::Off),
                                     "anc" | "nc" | "on" => Some(ListeningMode::NoiseCancellation),
@@ -535,7 +523,6 @@ impl DeviceManager {
                                     let _ = session.set_noise_mode(m).await;
                                 }
                             }
-                        }
 
                         // Send connection desktop notification
                         self.notifications.lock().await.notify_connected(
@@ -626,8 +613,8 @@ impl DeviceManager {
                                     }
 
                                     Some(Opcode::Settings) => {
-                                        if let Some(notice) = SettingNotice::parse(&frame) {
-                                            if let (Some(setting_id), Some(&val)) = (SettingId::from_u8(notice.id), notice.data.first()) {
+                                        if let Some(notice) = SettingNotice::parse(&frame)
+                                            && let (Some(setting_id), Some(&val)) = (SettingId::from_u8(notice.id), notice.data.first()) {
                                                 let mut s = state_clone.write().await;
                                                 match setting_id {
                                                     SettingId::NoiseControl => {
@@ -670,8 +657,8 @@ impl DeviceManager {
                                                 let json = format_state_json(&s);
                                                 drop(s);
 
-                                                if changed {
-                                                    if let Some(conn) = dbus_conn_clone.lock().await.as_ref() {
+                                                if changed
+                                                    && let Some(conn) = dbus_conn_clone.lock().await.as_ref() {
                                                         let _ = conn.emit_signal(
                                                             None::<()>,
                                                             "/org/headbridge",
@@ -680,9 +667,7 @@ impl DeviceManager {
                                                             &(json,),
                                                         ).await;
                                                     }
-                                                }
                                             }
-                                        }
                                     }
 
                                     Some(Opcode::EarDetection) => {
@@ -705,8 +690,8 @@ impl DeviceManager {
                                             }
 
                                             // Auto-restore preferred ANC / listening mode when putting earbuds in!
-                                            if !was_wearing && is_wearing {
-                                                if let Some(pref) = settings_clone.lock().await.get_preferred_noise_mode(&expected_addr) {
+                                            if !was_wearing && is_wearing
+                                                && let Some(pref) = settings_clone.lock().await.get_preferred_noise_mode(&expected_addr) {
                                                     let target_mode = match pref.as_str() {
                                                         "off" => Some(ListeningMode::Off),
                                                         "anc" | "nc" | "on" => Some(ListeningMode::NoiseCancellation),
@@ -714,13 +699,47 @@ impl DeviceManager {
                                                         "adaptive" => Some(ListeningMode::Adaptive),
                                                         _ => None,
                                                     };
-                                                    if let Some(m) = target_mode {
-                                                        if let Some(session) = active_apple_session_clone.lock().await.as_ref() {
+                                                    if let Some(m) = target_mode
+                                                        && let Some(session) = active_apple_session_clone.lock().await.as_ref() {
                                                             let _ = session.set_noise_mode(m).await;
+
+                                                            // Ensure state reflects restored mode if hardware frame is delayed
+                                                            let state_inner = state_clone.clone();
+                                                            let dbus_inner = dbus_conn_clone.clone();
+                                                            let expected_mode = match m {
+                                                                ListeningMode::Off => "off",
+                                                                ListeningMode::NoiseCancellation => "anc",
+                                                                ListeningMode::Transparency => "ambient",
+                                                                ListeningMode::Adaptive => "adaptive",
+                                                            }.to_string();
+
+                                                            tokio::spawn(async move {
+                                                                tokio::time::sleep(Duration::from_millis(400)).await;
+                                                                let mut updated = false;
+                                                                {
+                                                                    let mut s = state_inner.write().await;
+                                                                    if s.in_ear && s.noise_mode != expected_mode {
+                                                                        s.noise_mode = expected_mode;
+                                                                        updated = true;
+                                                                    }
+                                                                }
+                                                                if updated {
+                                                                    let s = state_inner.read().await;
+                                                                    let json = format_state_json(&s);
+                                                                    drop(s);
+                                                                    if let Some(conn) = dbus_inner.lock().await.as_ref() {
+                                                                        let _ = conn.emit_signal(
+                                                                            None::<()>,
+                                                                            "/org/headbridge",
+                                                                            "org.headbridge.Manager",
+                                                                            "StateChanged",
+                                                                            &(json,),
+                                                                        ).await;
+                                                                    }
+                                                                }
+                                                            });
                                                         }
-                                                    }
                                                 }
-                                            }
 
                                             let s = state_clone.read().await;
                                             let json = format_state_json(&s);
@@ -761,13 +780,11 @@ impl DeviceManager {
                 let name = device.name.clone();
 
                 let conn_res = Connection::system().await;
-                if let Ok(conn) = conn_res {
-                    if let Ok(Some(paths)) = BluezGattClient::resolve_paths(&conn, &address).await {
-                        if let Ok(client) = BluezGattClient::new(conn, &paths.request_path, &paths.response_path).await {
+                if let Ok(conn) = conn_res
+                    && let Ok(Some(paths)) = BluezGattClient::resolve_paths(&conn, &address).await
+                        && let Ok(client) = BluezGattClient::new(conn, &paths.request_path, &paths.response_path).await {
                             *self.active_bw_client.lock().await = Some(client);
                         }
-                    }
-                }
 
                 {
                     let mut s = self.state.write().await;
@@ -842,8 +859,8 @@ impl DeviceManager {
                                         }
                                     }
                                     // NC / Ambient report (0x22 or 0x23)
-                                    else if opcode == 0x22 || opcode == 0x23 {
-                                        if pkt.payload.len() >= 2 {
+                                    else if (opcode == 0x22 || opcode == 0x23)
+                                        && pkt.payload.len() >= 2 {
                                             let mut s = state_clone.write().await;
                                             s.noise_mode = match pkt.payload[1] {
                                                 0x01 => "anc".to_string(),
@@ -851,7 +868,6 @@ impl DeviceManager {
                                                 _ => "off".to_string(),
                                             };
                                         }
-                                    }
                                 }
                             }
 

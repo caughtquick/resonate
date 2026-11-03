@@ -72,7 +72,7 @@ impl RfcommSocket {
                     owned,
                     tokio::io::Interest::READABLE | tokio::io::Interest::WRITABLE,
                 )
-            }.map_err(|e| RfcommError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            }.map_err(|e| RfcommError::Io(std::io::Error::other(e.to_string())))?;
 
             if ret < 0 {
                 let err = std::io::Error::last_os_error();

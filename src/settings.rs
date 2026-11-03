@@ -90,11 +90,10 @@ impl SettingsStore {
 }
 
 pub fn dirs_config_dir() -> PathBuf {
-    if let Ok(config_home) = std::env::var("XDG_CONFIG_HOME") {
-        if !config_home.is_empty() {
+    if let Ok(config_home) = std::env::var("XDG_CONFIG_HOME")
+        && !config_home.is_empty() {
             return PathBuf::from(config_home);
         }
-    }
     if let Ok(home) = std::env::var("HOME") {
         return PathBuf::from(home).join(".config");
     }

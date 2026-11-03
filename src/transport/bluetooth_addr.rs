@@ -20,9 +20,12 @@ impl BdAddr {
         }
         Some(Self { b })
     }
+}
 
-    pub fn to_string(&self) -> String {
-        format!(
+impl std::fmt::Display for BdAddr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
             "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
             self.b[5], self.b[4], self.b[3], self.b[2], self.b[1], self.b[0]
         )

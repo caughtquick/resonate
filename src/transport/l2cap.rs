@@ -33,7 +33,7 @@ impl L2capSocket {
             const RETRY_DELAYS_MS: &[u64] = &[0, 300, 700, 1200, 1800];
             let mut last_error = None;
 
-            for (_attempt, &delay) in RETRY_DELAYS_MS.iter().enumerate() {
+            for &delay in RETRY_DELAYS_MS.iter() {
                 if delay > 0 {
                     tokio::time::sleep(Duration::from_millis(delay)).await;
                 }
@@ -80,7 +80,7 @@ impl L2capSocket {
                 } {
                     Ok(af) => af,
                     Err(e) => {
-                        last_error = Some(L2capError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())));
+                        last_error = Some(L2capError::Io(std::io::Error::other(e.to_string())));
                         continue;
                     }
                 };
@@ -207,11 +207,10 @@ impl AppleL2capSession {
                         break;
                     }
                     Ok(n) => {
-                        if let Some(frame) = Frame::parse(&buf[..n]) {
-                            if tx_incoming.send(frame).await.is_err() {
+                        if let Some(frame) = Frame::parse(&buf[..n])
+                            && tx_incoming.send(frame).await.is_err() {
                                 break;
                             }
-                        }
                     }
                     Err(_) => {
                         break;

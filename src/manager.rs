@@ -8,6 +8,7 @@ use crate::dbus_service::ResonateState;
 use crate::inventory::{BluetoothInventory, DeviceVendor, PairedDevice};
 use crate::notifications::NotificationService;
 use crate::protocols::aap::{self, BatteryKind, BatteryStatus, Frame, ListeningMode, MicSelection, Opcode, SettingId, SettingNotice};
+use crate::protocols::apple_models::AppleModel;
 use crate::protocols::sony::{SonyMDRPacket, SonyV1AutomaticPowerOff, SonyV1EqualizerPreset};
 use crate::settings::SettingsStore;
 use crate::transport::bluez::BluezGattClient;
@@ -40,7 +41,38 @@ pub fn format_state_json(s: &ResonateState) -> String {
         "touchSensor": s.touch_sensor,
         "dsee": s.dsee,
         "equalizerPreset": s.equalizer_preset,
+        "capabilities": s.capabilities,
     })).unwrap_or_else(|_| "{}".to_string())
+}
+
+fn capabilities_for_device(device: &PairedDevice) -> Vec<String> {
+    let mut capabilities = vec!["battery".to_string(), "anc".to_string()];
+    match device.vendor {
+        DeviceVendor::Apple => {
+            let model = device.model_name.as_deref()
+                .map(AppleModel::from_name)
+                .unwrap_or_else(|| AppleModel::from_name(&device.name));
+            let apple = model.capabilities();
+            capabilities.clear();
+            capabilities.push("battery".to_string());
+            if apple.has_anc { capabilities.push("anc".to_string()); }
+            if apple.has_transparency { capabilities.push("ambient".to_string()); }
+            if apple.has_adaptive { capabilities.push("adaptive".to_string()); }
+            if apple.has_case_battery { capabilities.push("case_battery".to_string()); }
+            if apple.has_in_ear_detection { capabilities.push("in_ear".to_string()); }
+            if apple.has_ear_detection_setting { capabilities.push("wear_sensor".to_string()); }
+            if apple.has_conv_awareness { capabilities.push("conversation_awareness".to_string()); }
+            if apple.has_mic_selection { capabilities.push("microphone".to_string()); }
+            if apple.has_press_and_hold { capabilities.push("one_bud_anc".to_string()); }
+            capabilities.push("chime".to_string());
+        }
+        DeviceVendor::Sony => capabilities.extend(["ambient_level", "equalizer", "standby", "touch_sensor", "dsee", "optimize"].into_iter().map(str::to_string)),
+        DeviceVendor::BowersWilkins => capabilities.extend(["equalizer", "standby", "wear_sensor", "action_button"].into_iter().map(str::to_string)),
+        DeviceVendor::Unknown => capabilities.clear(),
+    }
+    capabilities.sort();
+    capabilities.dedup();
+    capabilities
 }
 
 pub struct DeviceManager {
@@ -103,6 +135,10 @@ impl DeviceManager {
     pub async fn get_status_json(&self) -> String {
         let s = self.state.read().await;
         format_state_json(&s)
+    }
+
+    pub async fn get_capabilities(&self) -> Vec<String> {
+        self.state.read().await.capabilities.clone()
     }
 
     pub async fn list_devices_json(&self) -> String {
@@ -175,6 +211,7 @@ impl DeviceManager {
             s.connection_state = "idle".to_string();
             s.device_name = String::new();
             s.vendor = String::new();
+            s.capabilities.clear();
             s.battery_percent = -1;
             s.battery_left = -1;
             s.battery_right = -1;
@@ -483,6 +520,7 @@ impl DeviceManager {
                     s.connection_state = "connecting".to_string();
                     s.device_name = name.clone();
                     s.vendor = "Apple".to_string();
+                    s.capabilities = capabilities_for_device(device);
                 }
 
                 match AppleL2capSession::start(&address, tx).await {
@@ -770,6 +808,7 @@ impl DeviceManager {
                         let mut s = self.state.write().await;
                         s.connected = false;
                         s.connection_state = "failed".to_string();
+                        s.capabilities.clear();
                         (false, format!("L2CAP connect to {} failed: {}", address, e))
                     }
                 }
@@ -780,11 +819,20 @@ impl DeviceManager {
                 let name = device.name.clone();
 
                 let conn_res = Connection::system().await;
-                if let Ok(conn) = conn_res
+                let bw_client = if let Ok(conn) = conn_res
                     && let Ok(Some(paths)) = BluezGattClient::resolve_paths(&conn, &address).await
                         && let Ok(client) = BluezGattClient::new(conn, &paths.request_path, &paths.response_path).await {
-                            *self.active_bw_client.lock().await = Some(client);
-                        }
+                            Some(client)
+                        } else {
+                            None
+                        };
+                let Some(bw_client) = bw_client else {
+                    let mut s = self.state.write().await;
+                    s.connected = false;
+                    s.connection_state = "failed".to_string();
+                    return (false, format!("Unable to establish Bowers & Wilkins control session for {} ({})", name, address));
+                };
+                *self.active_bw_client.lock().await = Some(bw_client);
 
                 {
                     let mut s = self.state.write().await;
@@ -792,6 +840,7 @@ impl DeviceManager {
                     s.connection_state = "connected".to_string();
                     s.device_name = name.clone();
                     s.vendor = "Bowers & Wilkins".to_string();
+                    s.capabilities = capabilities_for_device(device);
                     if let Some(p) = device.battery_percent {
                         s.battery_percent = p as i32;
                     }
@@ -823,6 +872,7 @@ impl DeviceManager {
                             s.connection_state = "connected".to_string();
                             s.device_name = name.clone();
                             s.vendor = "Sony".to_string();
+                            s.capabilities = capabilities_for_device(device);
                             if let Some(p) = device.battery_percent {
                                 s.battery_percent = p as i32;
                             }
@@ -884,6 +934,7 @@ impl DeviceManager {
                         s.connection_state = "connected".to_string();
                         s.device_name = name.clone();
                         s.vendor = "Sony".to_string();
+                        s.capabilities = capabilities_for_device(device);
                         if let Some(p) = device.battery_percent {
                             s.battery_percent = p as i32;
                         }
@@ -967,5 +1018,40 @@ impl DeviceManager {
 
         let () = proxy.call("Connect", &()).await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn device(vendor: DeviceVendor, name: &str) -> PairedDevice {
+        PairedDevice {
+            address: "00:11:22:33:44:55".to_string(),
+            name: name.to_string(),
+            paired: true,
+            connected: true,
+            modalias: None,
+            uuids: Vec::new(),
+            vendor,
+            model_name: None,
+            battery_percent: Some(80),
+        }
+    }
+
+    #[test]
+    fn capabilities_are_model_aware_for_apple() {
+        let caps = capabilities_for_device(&device(DeviceVendor::Apple, "AirPods Pro 2"));
+        assert!(caps.iter().any(|cap| cap == "anc"));
+        assert!(caps.iter().any(|cap| cap == "adaptive"));
+        assert!(caps.iter().any(|cap| cap == "conversation_awareness"));
+    }
+
+    #[test]
+    fn capabilities_are_vendor_specific() {
+        let sony = capabilities_for_device(&device(DeviceVendor::Sony, "WH-1000XM5"));
+        assert!(sony.iter().any(|cap| cap == "equalizer"));
+        assert!(sony.iter().any(|cap| cap == "dsee"));
+        assert!(!sony.iter().any(|cap| cap == "conversation_awareness"));
     }
 }

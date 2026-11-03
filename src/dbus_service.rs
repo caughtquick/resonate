@@ -29,6 +29,7 @@ pub struct ResonateState {
     pub dsee: bool,
     pub equalizer_preset: String,
     pub audio_sink: String,
+    pub capabilities: Vec<String>,
 }
 
 pub struct ResonateDbusManager {
@@ -163,8 +164,17 @@ impl ResonateDbusManager {
         self.manager.state.read().await.audio_sink.clone()
     }
 
+    #[zbus(property)]
+    async fn capabilities(&self) -> Vec<String> {
+        self.manager.state.read().await.capabilities.clone()
+    }
+
     async fn get_status(&self) -> String {
         self.manager.get_status_json().await
+    }
+
+    async fn get_capabilities(&self) -> Vec<String> {
+        self.manager.get_capabilities().await
     }
 
     async fn list_devices(&self) -> String {

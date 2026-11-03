@@ -14,6 +14,31 @@ use crate::transport::bluez::BluezGattClient;
 use crate::transport::l2cap::AppleL2capSession;
 use crate::transport::rfcomm::SonyMdrSession;
 
+pub fn format_state_json(s: &ResonateState) -> String {
+    serde_json::to_string_pretty(&serde_json::json!({
+        "connected": s.connected,
+        "connectionState": s.connection_state,
+        "deviceName": s.device_name,
+        "vendor": s.vendor,
+        "batteryPercent": if s.battery_percent >= 0 { serde_json::Value::from(s.battery_percent) } else { serde_json::Value::Null },
+        "batteryLeft": if s.battery_left >= 0 { serde_json::Value::from(s.battery_left) } else { serde_json::Value::Null },
+        "batteryRight": if s.battery_right >= 0 { serde_json::Value::from(s.battery_right) } else { serde_json::Value::Null },
+        "batteryCase": if s.battery_case >= 0 { serde_json::Value::from(s.battery_case) } else { serde_json::Value::Null },
+        "isCharging": s.is_charging,
+        "noiseMode": s.noise_mode,
+        "audioSink": s.audio_sink,
+        "earDetection": s.ear_detection,
+        "conversationAwareness": s.conv_aware,
+        "micMode": s.mic_mode,
+        "oneBudAnc": s.one_bud_anc,
+        "chimeVolume": s.chime_volume,
+        "standbyMinutes": s.standby_minutes,
+        "touchSensor": s.touch_sensor,
+        "dsee": s.dsee,
+        "equalizerPreset": s.equalizer_preset,
+    })).unwrap_or_else(|_| "{}".to_string())
+}
+
 pub struct DeviceManager {
     pub state: Arc<RwLock<ResonateState>>,
     active_apple_session: Arc<Mutex<Option<AppleL2capSession>>>,
@@ -23,6 +48,7 @@ pub struct DeviceManager {
     pub handle: tokio::runtime::Handle,
     pub settings: Arc<Mutex<SettingsStore>>,
     pub notifications: Arc<Mutex<NotificationService>>,
+    dbus_conn: Arc<Mutex<Option<Connection>>>,
 }
 
 impl DeviceManager {
@@ -36,33 +62,30 @@ impl DeviceManager {
             handle,
             settings: Arc::new(Mutex::new(SettingsStore::load())),
             notifications: Arc::new(Mutex::new(NotificationService::new())),
+            dbus_conn: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    pub async fn set_dbus_connection(&self, conn: Connection) {
+        *self.dbus_conn.lock().await = Some(conn);
+    }
+
+    pub async fn notify_state_changed(&self) {
+        let json = self.get_status_json().await;
+        if let Some(conn) = self.dbus_conn.lock().await.as_ref() {
+            let _ = conn.emit_signal(
+                None::<()>,
+                "/org/headbridge",
+                "org.headbridge.Manager",
+                "StateChanged",
+                &(json,),
+            ).await;
         }
     }
 
     pub async fn get_status_json(&self) -> String {
         let s = self.state.read().await;
-        serde_json::to_string_pretty(&serde_json::json!({
-            "connected": s.connected,
-            "connectionState": s.connection_state,
-            "deviceName": s.device_name,
-            "vendor": s.vendor,
-            "batteryPercent": if s.battery_percent >= 0 { serde_json::Value::from(s.battery_percent) } else { serde_json::Value::Null },
-            "batteryLeft": if s.battery_left >= 0 { serde_json::Value::from(s.battery_left) } else { serde_json::Value::Null },
-            "batteryRight": if s.battery_right >= 0 { serde_json::Value::from(s.battery_right) } else { serde_json::Value::Null },
-            "batteryCase": if s.battery_case >= 0 { serde_json::Value::from(s.battery_case) } else { serde_json::Value::Null },
-            "isCharging": s.is_charging,
-            "noiseMode": s.noise_mode,
-            "audioSink": s.audio_sink,
-            "earDetection": s.ear_detection,
-            "conversationAwareness": s.conv_aware,
-            "micMode": s.mic_mode,
-            "oneBudAnc": s.one_bud_anc,
-            "chimeVolume": s.chime_volume,
-            "standbyMinutes": s.standby_minutes,
-            "touchSensor": s.touch_sensor,
-            "dsee": s.dsee,
-            "equalizerPreset": s.equalizer_preset,
-        })).unwrap_or_else(|_| "{}".to_string())
+        format_state_json(&s)
     }
 
     pub async fn list_devices_json(&self) -> String {
@@ -144,6 +167,7 @@ impl DeviceManager {
             }
         }
 
+        self.notify_state_changed().await;
         true
     }
 
@@ -165,6 +189,7 @@ impl DeviceManager {
             }
 
             self.state.write().await.noise_mode = mode_norm.clone();
+            self.notify_state_changed().await;
             return (true, format!("ANC mode set to {}", mode_norm));
         }
 
@@ -174,6 +199,7 @@ impl DeviceManager {
                 return (false, format!("Failed to send Sony ANC command: {}", e));
             }
             self.state.write().await.noise_mode = mode_norm.clone();
+            self.notify_state_changed().await;
             return (true, format!("Sony ANC mode set to {}", mode_norm));
         }
 
@@ -189,6 +215,7 @@ impl DeviceManager {
                 return (false, format!("Failed to send B&W ANC command: {}", e));
             }
             self.state.write().await.noise_mode = mode_norm.clone();
+            self.notify_state_changed().await;
             return (true, format!("Bowers & Wilkins ANC mode set to {}", mode_norm));
         }
 
@@ -445,14 +472,19 @@ impl DeviceManager {
                         let active_addr_clone = self.active_address.clone();
                         let settings_clone = self.settings.clone();
                         let notif_clone = self.notifications.clone();
+                        let dbus_conn_clone = self.dbus_conn.clone();
                         let expected_addr = address.clone();
                         let dev_name = name.clone();
+
+                        self.notify_state_changed().await;
 
                         tokio::spawn(async move {
                             while let Some(frame) = rx.recv().await {
                                 if active_addr_clone.read().await.as_deref() != Some(&expected_addr) {
                                     break;
                                 }
+
+                                let mut changed = false;
 
                                 match Opcode::from_u8(frame.opcode) {
                                     Some(Opcode::Battery) => {
@@ -499,8 +531,19 @@ impl DeviceManager {
                                         }
 
                                         let current_pct = s.battery_percent;
+                                        let json = format_state_json(&s);
                                         drop(s);
                                         notif_clone.lock().await.check_battery(&dev_name, current_pct).await;
+
+                                        if let Some(conn) = dbus_conn_clone.lock().await.as_ref() {
+                                            let _ = conn.emit_signal(
+                                                None::<()>,
+                                                "/org/headbridge",
+                                                "org.headbridge.Manager",
+                                                "StateChanged",
+                                                &(json,),
+                                            ).await;
+                                        }
                                     }
 
                                     Some(Opcode::Settings) => {
@@ -516,15 +559,19 @@ impl DeviceManager {
                                                             4 => "adaptive".to_string(),
                                                             _ => s.noise_mode.clone(),
                                                         };
+                                                        changed = true;
                                                     }
                                                     SettingId::ConvAware => {
                                                         s.conv_aware = val == 1;
+                                                        changed = true;
                                                     }
                                                     SettingId::OneBudAnc => {
                                                         s.one_bud_anc = val == 1;
+                                                        changed = true;
                                                     }
                                                     SettingId::ChimeVolume => {
                                                         s.chime_volume = val as i32;
+                                                        changed = true;
                                                     }
                                                     SettingId::MicMode => {
                                                         s.mic_mode = match val {
@@ -533,11 +580,27 @@ impl DeviceManager {
                                                             2 => "left".to_string(),
                                                             _ => "auto".to_string(),
                                                         };
+                                                        changed = true;
                                                     }
                                                     SettingId::EarDetection => {
                                                         s.ear_detection = val == 1;
+                                                        changed = true;
                                                     }
                                                     _ => {}
+                                                }
+                                                let json = format_state_json(&s);
+                                                drop(s);
+
+                                                if changed {
+                                                    if let Some(conn) = dbus_conn_clone.lock().await.as_ref() {
+                                                        let _ = conn.emit_signal(
+                                                            None::<()>,
+                                                            "/org/headbridge",
+                                                            "org.headbridge.Manager",
+                                                            "StateChanged",
+                                                            &(json,),
+                                                        ).await;
+                                                    }
                                                 }
                                             }
                                         }
@@ -547,6 +610,17 @@ impl DeviceManager {
                                         if let Some(in_ear) = aap::parse_in_ear(&frame.payload) {
                                             let mut s = state_clone.write().await;
                                             s.ear_detection = in_ear.primary == EarStatus::InEar || in_ear.secondary == EarStatus::InEar;
+                                            let json = format_state_json(&s);
+                                            drop(s);
+                                            if let Some(conn) = dbus_conn_clone.lock().await.as_ref() {
+                                                let _ = conn.emit_signal(
+                                                    None::<()>,
+                                                    "/org/headbridge",
+                                                    "org.headbridge.Manager",
+                                                    "StateChanged",
+                                                    &(json,),
+                                                ).await;
+                                            }
                                         }
                                     }
 

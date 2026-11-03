@@ -22,6 +22,12 @@ pub enum Commands {
     #[command(about = "Show status of connected headphone (default)")]
     Status,
 
+    #[command(about = "Stream real-time status as continuous JSON for Waybar, Polybar, or scripts")]
+    Watch {
+        #[arg(short, long, default_value = "waybar", help = "Output format: waybar, raw, compact")]
+        format: String,
+    },
+
     #[command(about = "List paired AirPods, Beats, Bowers & Wilkins, and Sony devices")]
     Devices,
 

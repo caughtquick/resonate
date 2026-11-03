@@ -675,6 +675,7 @@ dependencies = [
  "byteorder",
  "clap",
  "clap_complete",
+ "futures-lite",
  "libc",
  "rmp-serde",
  "serde",

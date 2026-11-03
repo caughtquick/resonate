@@ -16,3 +16,4 @@ libc = "0.2"
 zbus = "5.5"
 clap = { version = "4.5", features = ["derive"] }
 clap_complete = "4.5"
+futures-lite = "2.6"

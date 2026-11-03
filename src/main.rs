@@ -1,6 +1,8 @@
+use std::io::Write;
 use std::sync::Arc;
 use clap::{CommandFactory, Parser};
 use clap_complete::{generate, Shell};
+use futures_lite::stream::StreamExt;
 use tokio::sync::RwLock;
 
 use resonate::cli::{Cli, Commands};
@@ -102,6 +104,8 @@ WantedBy=default.target
                 .build()
                 .await?;
 
+            device_mgr.set_dbus_connection(_conn.clone()).await;
+
             println!("Resonate D-Bus services registered: org.headbridge & org.resonate on /org/headbridge");
             println!("Monitoring BlueZ device connections...");
 
@@ -110,6 +114,49 @@ WantedBy=default.target
 
             // Keep daemon alive
             std::future::pending::<()>().await;
+        }
+
+        Commands::Watch { format } => {
+            let conn = match zbus::Connection::session().await {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("Failed to connect to D-Bus session: {}", e);
+                    std::process::exit(1);
+                }
+            };
+
+            let proxy = match zbus::Proxy::new(
+                &conn,
+                "org.headbridge",
+                "/org/headbridge",
+                "org.headbridge.Manager",
+            ).await {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("Failed to connect to Resonate D-Bus interface: {}", e);
+                    std::process::exit(1);
+                }
+            };
+
+            let initial_status: String = match proxy.call("GetStatus", &()).await {
+                Ok(s) => s,
+                Err(_) => r#"{"connected":false}"#.to_string(),
+            };
+            print_formatted_status(&initial_status, &format);
+
+            let mut signal_stream = match proxy.receive_signal("StateChanged").await {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Failed to subscribe to StateChanged signal: {}", e);
+                    std::process::exit(1);
+                }
+            };
+
+            while let Some(msg) = signal_stream.next().await {
+                if let Ok((status_json,)) = msg.body().deserialize::<(String,)>() {
+                    print_formatted_status(&status_json, &format);
+                }
+            }
         }
 
         Commands::Devices => {
@@ -342,19 +389,29 @@ WantedBy=default.target
                     "/org/headbridge",
                     "org.headbridge.Manager",
                 ).await {
-                    if let Some(m) = mode {
-                        let res: Result<(bool, String), _> = proxy.call("SetAnc", &(m,)).await;
-                        match res {
-                            Ok((_, msg)) => println!("{}", msg),
-                            Err(e) => eprintln!("Failed to set ANC mode: {}", e),
-                        }
-                    } else {
-                        let status_res: Result<String, _> = proxy.call("GetStatus", &()).await;
-                        if let Ok(status) = status_res {
-                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&status) {
-                                println!("Current ANC Mode: {}", val["noiseMode"].as_str().unwrap_or("off"));
+                    let target_mode = match mode.as_deref() {
+                        Some("toggle") | None => {
+                            let status_res: Result<String, _> = proxy.call("GetStatus", &()).await;
+                            let current = match status_res {
+                                Ok(s) => {
+                                    let v: serde_json::Value = serde_json::from_str(&s).unwrap_or_default();
+                                    v["noiseMode"].as_str().unwrap_or("off").to_string()
+                                }
+                                Err(_) => "off".to_string(),
+                            };
+                            match current.as_str() {
+                                "anc" => "ambient".to_string(),
+                                "ambient" => "off".to_string(),
+                                _ => "anc".to_string(),
                             }
                         }
+                        Some(m) => m.to_string(),
+                    };
+
+                    let res: Result<(bool, String), _> = proxy.call("SetAnc", &(target_mode,)).await;
+                    match res {
+                        Ok((_, msg)) => println!("{}", msg),
+                        Err(e) => eprintln!("Failed to set ANC mode: {}", e),
                     }
                     return Ok(());
                 }
@@ -633,4 +690,82 @@ WantedBy=default.target
     }
 
     Ok(())
+}
+
+fn format_waybar(status_json: &str) -> String {
+    let val: serde_json::Value = serde_json::from_str(status_json).unwrap_or_default();
+    let connected = val["connected"].as_bool().unwrap_or(false);
+
+    if !connected {
+        return serde_json::json!({
+            "text": "🎧 Disconnected",
+            "tooltip": "No supported headphones connected",
+            "class": "disconnected",
+            "percentage": 0
+        }).to_string();
+    }
+
+    let dev_name = val["deviceName"].as_str().unwrap_or("Headphones");
+    let vendor = val["vendor"].as_str().unwrap_or("");
+    let batt = val["batteryPercent"].as_i64().unwrap_or(-1);
+    let left = val["batteryLeft"].as_i64();
+    let right = val["batteryRight"].as_i64();
+    let case = val["batteryCase"].as_i64();
+    let noise_mode = val["noiseMode"].as_str().unwrap_or("off");
+    let is_charging = val["isCharging"].as_bool().unwrap_or(false);
+    let sink = val["audioSink"].as_str().unwrap_or("");
+
+    let mode_tag = match noise_mode {
+        "anc" => "ANC",
+        "ambient" => "Ambient",
+        "adaptive" => "Adaptive",
+        _ => "Off",
+    };
+
+    let text = if batt >= 0 {
+        format!("🎧 {}% ({}){}", batt, mode_tag, if is_charging { " ⚡" } else { "" })
+    } else {
+        format!("🎧 ({})", mode_tag)
+    };
+
+    let mut tooltip = format!("{}\nVendor: {}\nMode: {}", dev_name, vendor, noise_mode);
+    if let (Some(l), Some(r)) = (left, right) {
+        tooltip.push_str(&format!("\nLeft: {}% | Right: {}%", l, r));
+    }
+    if let Some(b) = case {
+        tooltip.push_str(&format!("\nCase: {}%", b));
+    }
+    if !sink.is_empty() {
+        tooltip.push_str(&format!("\nSink: {}", sink));
+    }
+
+    serde_json::json!({
+        "text": text,
+        "tooltip": tooltip,
+        "class": format!("connected {}", noise_mode),
+        "percentage": batt.max(0)
+    }).to_string()
+}
+
+fn print_formatted_status(status_json: &str, format: &str) {
+    match format.to_lowercase().as_str() {
+        "raw" | "json" => {
+            println!("{}", status_json.trim());
+        }
+        "compact" => {
+            let val: serde_json::Value = serde_json::from_str(status_json).unwrap_or_default();
+            if val["connected"].as_bool().unwrap_or(false) {
+                let batt = val["batteryPercent"].as_i64().unwrap_or(-1);
+                let mode = val["noiseMode"].as_str().unwrap_or("off");
+                println!("🎧 {}% • {}", batt, mode.to_uppercase());
+            } else {
+                println!("🎧 Disconnected");
+            }
+        }
+        _ => {
+            // Default: Waybar JSON
+            println!("{}", format_waybar(status_json));
+        }
+    }
+    let _ = std::io::stdout().flush();
 }

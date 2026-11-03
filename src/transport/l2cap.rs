@@ -1,9 +1,10 @@
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc;
 
-use crate::protocols::aap::{self, Frame};
+use crate::protocols::aap::{self, Frame, ListeningMode, MicSelection, SettingId};
 use crate::transport::bluetooth_addr::{self, BdAddr, SockAddrL2};
 
 #[derive(Debug, thiserror::Error)]
@@ -46,29 +47,12 @@ impl L2capSocket {
                 unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
             }
 
-            // Bind to BDADDR_ANY
-            let mut local_addr: SockAddrL2 = unsafe { std::mem::zeroed() };
-            local_addr.l2_family = bluetooth_addr::AF_BLUETOOTH;
-            local_addr.l2_bdaddr = BdAddr::ANY;
-
-            let bind_res = unsafe {
-                libc::bind(
-                    fd,
-                    &local_addr as *const _ as *const libc::sockaddr,
-                    std::mem::size_of::<SockAddrL2>() as libc::socklen_t,
-                )
-            };
-            if bind_res < 0 {
-                let err = std::io::Error::last_os_error();
-                unsafe { libc::close(fd) };
-                return Err(L2capError::SocketFailed(err));
-            }
-
-            // Connect to remote target
+            // Connect to remote target without explicit bind
             let mut remote_addr: SockAddrL2 = unsafe { std::mem::zeroed() };
             remote_addr.l2_family = bluetooth_addr::AF_BLUETOOTH;
             remote_addr.l2_psm = psm.to_le();
             remote_addr.l2_bdaddr = bd_addr;
+            remote_addr.l2_bdaddr_type = 0; // BDADDR_BREDR
 
             let ret = unsafe {
                 libc::connect(
@@ -79,7 +63,12 @@ impl L2capSocket {
             };
 
             let owned = unsafe { OwnedFd::from_raw_fd(fd) };
-            let async_fd = AsyncFd::new(owned)?;
+            let async_fd = unsafe {
+                AsyncFd::register_with_interest(
+                    owned,
+                    tokio::io::Interest::READABLE | tokio::io::Interest::WRITABLE,
+                )
+            }.map_err(|e| L2capError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
 
             if ret < 0 {
                 let err = std::io::Error::last_os_error();
@@ -118,52 +107,89 @@ impl L2capSocket {
     }
 
     pub async fn send(&self, data: &[u8]) -> Result<(), L2capError> {
-        let mut guard = self.async_fd.writable().await?;
-        let res = unsafe {
-            libc::send(
-                self.async_fd.as_raw_fd(),
-                data.as_ptr() as *const libc::c_void,
-                data.len(),
-                libc::MSG_NOSIGNAL,
-            )
-        };
-        if res < 0 {
-            return Err(L2capError::Io(std::io::Error::last_os_error()));
+        loop {
+            let mut guard = self.async_fd.writable().await?;
+            let res = unsafe {
+                libc::send(
+                    self.async_fd.as_raw_fd(),
+                    data.as_ptr() as *const libc::c_void,
+                    data.len(),
+                    libc::MSG_NOSIGNAL,
+                )
+            };
+            if res < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.kind() == std::io::ErrorKind::WouldBlock {
+                    guard.clear_ready();
+                    continue;
+                }
+                return Err(L2capError::Io(err));
+            }
+            guard.retain_ready();
+            return Ok(());
         }
-        guard.retain_ready();
-        Ok(())
     }
 
     pub async fn recv(&self, buf: &mut [u8]) -> Result<usize, L2capError> {
-        let mut guard = self.async_fd.readable().await?;
-        let res = unsafe {
-            libc::recv(
-                self.async_fd.as_raw_fd(),
-                buf.as_mut_ptr() as *mut libc::c_void,
-                buf.len(),
-                0,
-            )
-        };
-        if res < 0 {
-            let err = std::io::Error::last_os_error();
-            if err.kind() == std::io::ErrorKind::WouldBlock {
-                guard.clear_ready();
-                return Ok(0);
+        loop {
+            let mut guard = self.async_fd.readable().await?;
+            let res = unsafe {
+                libc::recv(
+                    self.async_fd.as_raw_fd(),
+                    buf.as_mut_ptr() as *mut libc::c_void,
+                    buf.len(),
+                    0,
+                )
+            };
+            if res < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.kind() == std::io::ErrorKind::WouldBlock {
+                    guard.clear_ready();
+                    continue;
+                }
+                return Err(L2capError::Io(err));
             }
-            return Err(L2capError::Io(err));
+            guard.retain_ready();
+            return Ok(res as usize);
         }
-        guard.retain_ready();
-        Ok(res as usize)
     }
 }
 
 pub struct AppleL2capSession {
-    socket: L2capSocket,
+    socket: Arc<L2capSocket>,
+    _reader_task: tokio::task::JoinHandle<()>,
 }
 
 impl AppleL2capSession {
-    pub async fn start(address: &str, _tx_incoming: mpsc::Sender<Frame>) -> Result<Self, L2capError> {
-        let socket = L2capSocket::connect(address, aap::AAP_PSM, Duration::from_millis(3000)).await?;
+    pub async fn start(
+        address: &str,
+        tx_incoming: mpsc::Sender<Frame>,
+    ) -> Result<Self, L2capError> {
+        let socket = Arc::new(L2capSocket::connect(address, aap::AAP_PSM, Duration::from_millis(3500)).await?);
+
+        // Spawn background reader
+        let reader_sock = socket.clone();
+        let reader_task = tokio::spawn(async move {
+            let mut buf = [0u8; 1024];
+            loop {
+                match reader_sock.recv(&mut buf).await {
+                    Ok(0) => {
+                        // Socket closed by peer
+                        break;
+                    }
+                    Ok(n) => {
+                        if let Some(frame) = Frame::parse(&buf[..n]) {
+                            if tx_incoming.send(frame).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        break;
+                    }
+                }
+            }
+        });
 
         // 1. Handshake
         socket.send(&aap::HANDSHAKE_RAW_BYTES).await?;
@@ -176,10 +202,72 @@ impl AppleL2capSession {
         // 3. Subscribe to notifications
         socket.send(&aap::subscribe_notifications_frame().encode()).await?;
 
-        Ok(Self { socket })
+        Ok(Self {
+            socket,
+            _reader_task: reader_task,
+        })
     }
 
     pub async fn send_frame(&self, frame: &Frame) -> Result<(), L2capError> {
         self.socket.send(&frame.encode()).await
     }
+
+    pub async fn set_noise_mode(&self, mode: ListeningMode) -> Result<(), L2capError> {
+        self.send_frame(&aap::set_noise_control(mode)).await
+    }
+
+    pub async fn set_conversation_awareness(&self, enabled: bool) -> Result<(), L2capError> {
+        self.send_frame(&aap::set_conversation_awareness(enabled)).await
+    }
+
+    pub async fn set_ear_detection(&self, enabled: bool) -> Result<(), L2capError> {
+        self.send_frame(&aap::set_ear_detection(enabled)).await
+    }
+
+    pub async fn set_mic_mode(&self, mode: MicSelection) -> Result<(), L2capError> {
+        self.send_frame(&aap::set_mic_mode(mode)).await
+    }
+
+    pub async fn set_one_bud_anc(&self, enabled: bool) -> Result<(), L2capError> {
+        self.send_frame(&aap::write_setting(SettingId::OneBudAnc as u8, if enabled { 1 } else { 2 })).await
+    }
+
+    pub async fn set_chime_volume(&self, vol: u8) -> Result<(), L2capError> {
+        self.send_frame(&aap::write_setting(SettingId::ChimeVolume as u8, vol.min(100))).await
+    }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_live_airpods_connection() {
+        let (tx, mut rx) = mpsc::channel(32);
+        let mac = "6C:12:70:3F:8E:AE";
+        println!("Attempting L2CAP connection to {}", mac);
+        if let Ok(session) = AppleL2capSession::start(mac, tx).await {
+            println!("Connected successfully to AirPods via L2CAP!");
+            let timer = tokio::time::sleep(Duration::from_millis(1500));
+            tokio::pin!(timer);
+            loop {
+                tokio::select! {
+                    _ = &mut timer => {
+                        println!("Finished listen period.");
+                        break;
+                    }
+                    Some(frame) = rx.recv() => {
+                        println!("Received AAP Frame: opcode=0x{:02X}, payload_len={}", frame.opcode, frame.payload.len());
+                        if frame.opcode == aap::Opcode::Battery as u8 {
+                            let comps = aap::parse_battery(&frame.payload);
+                            println!("Parsed Battery Components: {:?}", comps);
+                        }
+                    }
+                }
+            }
+        } else {
+            println!("AirPods not currently reachable via L2CAP (may be in case or disconnected).");
+        }
+    }
+}
+

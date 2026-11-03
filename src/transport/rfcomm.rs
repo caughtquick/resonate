@@ -46,25 +46,7 @@ impl RfcommSocket {
                 unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
             }
 
-            // Bind to BDADDR_ANY
-            let mut local_addr: SockAddrRc = unsafe { std::mem::zeroed() };
-            local_addr.rc_family = bluetooth_addr::AF_BLUETOOTH;
-            local_addr.rc_bdaddr = BdAddr::ANY;
-
-            let bind_res = unsafe {
-                libc::bind(
-                    fd,
-                    &local_addr as *const _ as *const libc::sockaddr,
-                    std::mem::size_of::<SockAddrRc>() as libc::socklen_t,
-                )
-            };
-            if bind_res < 0 {
-                let err = std::io::Error::last_os_error();
-                unsafe { libc::close(fd) };
-                return Err(RfcommError::SocketFailed(err));
-            }
-
-            // Connect to remote target
+            // Connect to remote target without explicit bind
             let mut remote_addr: SockAddrRc = unsafe { std::mem::zeroed() };
             remote_addr.rc_family = bluetooth_addr::AF_BLUETOOTH;
             remote_addr.rc_channel = channel;
@@ -79,7 +61,12 @@ impl RfcommSocket {
             };
 
             let owned = unsafe { OwnedFd::from_raw_fd(fd) };
-            let async_fd = AsyncFd::new(owned)?;
+            let async_fd = unsafe {
+                AsyncFd::register_with_interest(
+                    owned,
+                    tokio::io::Interest::READABLE | tokio::io::Interest::WRITABLE,
+                )
+            }.map_err(|e| RfcommError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
 
             if ret < 0 {
                 let err = std::io::Error::last_os_error();

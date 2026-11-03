@@ -1,6 +1,7 @@
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use zbus::interface;
+
+use crate::manager::DeviceManager;
 
 #[derive(Debug, Clone, Default)]
 pub struct ResonateState {
@@ -27,12 +28,12 @@ pub struct ResonateState {
 }
 
 pub struct ResonateDbusManager {
-    state: Arc<RwLock<ResonateState>>,
+    manager: Arc<DeviceManager>,
 }
 
 impl ResonateDbusManager {
-    pub fn new(state: Arc<RwLock<ResonateState>>) -> Self {
-        Self { state }
+    pub fn new(manager: Arc<DeviceManager>) -> Self {
+        Self { manager }
     }
 }
 
@@ -40,140 +41,134 @@ impl ResonateDbusManager {
 impl ResonateDbusManager {
     #[zbus(property)]
     async fn connected(&self) -> bool {
-        self.state.read().await.connected
+        self.manager.state.read().await.connected
     }
 
     #[zbus(property)]
     async fn connection_state(&self) -> String {
-        self.state.read().await.connection_state.clone()
+        self.manager.state.read().await.connection_state.clone()
     }
 
     #[zbus(property)]
     async fn device_name(&self) -> String {
-        self.state.read().await.device_name.clone()
+        self.manager.state.read().await.device_name.clone()
     }
 
     #[zbus(property)]
     async fn vendor(&self) -> String {
-        self.state.read().await.vendor.clone()
+        self.manager.state.read().await.vendor.clone()
     }
 
     #[zbus(property)]
     async fn battery_percent(&self) -> i32 {
-        self.state.read().await.battery_percent
+        self.manager.state.read().await.battery_percent
     }
 
     #[zbus(property)]
     async fn battery_left(&self) -> i32 {
-        self.state.read().await.battery_left
+        self.manager.state.read().await.battery_left
     }
 
     #[zbus(property)]
     async fn battery_right(&self) -> i32 {
-        self.state.read().await.battery_right
+        self.manager.state.read().await.battery_right
     }
 
     #[zbus(property)]
     async fn battery_case(&self) -> i32 {
-        self.state.read().await.battery_case
+        self.manager.state.read().await.battery_case
     }
 
     #[zbus(property)]
     async fn is_charging(&self) -> bool {
-        self.state.read().await.is_charging
+        self.manager.state.read().await.is_charging
     }
 
     #[zbus(property)]
     async fn noise_mode(&self) -> String {
-        self.state.read().await.noise_mode.clone()
+        self.manager.state.read().await.noise_mode.clone()
     }
 
     #[zbus(property)]
     async fn ear_detection(&self) -> bool {
-        self.state.read().await.ear_detection
+        self.manager.state.read().await.ear_detection
     }
 
     #[zbus(property)]
     async fn conversation_awareness(&self) -> bool {
-        self.state.read().await.conv_aware
+        self.manager.state.read().await.conv_aware
     }
 
     #[zbus(property)]
     async fn microphone_mode(&self) -> String {
-        self.state.read().await.mic_mode.clone()
+        self.manager.state.read().await.mic_mode.clone()
     }
 
     #[zbus(property)]
     async fn one_bud_anc(&self) -> bool {
-        self.state.read().await.one_bud_anc
+        self.manager.state.read().await.one_bud_anc
     }
 
     #[zbus(property)]
     async fn chime_volume(&self) -> i32 {
-        self.state.read().await.chime_volume
+        self.manager.state.read().await.chime_volume
     }
 
     #[zbus(property)]
     async fn standby_minutes(&self) -> i32 {
-        self.state.read().await.standby_minutes
+        self.manager.state.read().await.standby_minutes
     }
 
     #[zbus(property)]
     async fn touch_sensor(&self) -> bool {
-        self.state.read().await.touch_sensor
+        self.manager.state.read().await.touch_sensor
     }
 
     #[zbus(property)]
     async fn dsee(&self) -> bool {
-        self.state.read().await.dsee
+        self.manager.state.read().await.dsee
     }
 
     #[zbus(property)]
     async fn equalizer_preset(&self) -> String {
-        self.state.read().await.equalizer_preset.clone()
+        self.manager.state.read().await.equalizer_preset.clone()
     }
 
     #[zbus(property)]
     async fn audio_sink(&self) -> String {
-        self.state.read().await.audio_sink.clone()
+        self.manager.state.read().await.audio_sink.clone()
     }
 
     async fn get_status(&self) -> String {
-        let s = self.state.read().await;
-        serde_json::to_string_pretty(&serde_json::json!({
-            "connected": s.connected,
-            "connectionState": s.connection_state,
-            "deviceName": s.device_name,
-            "vendor": s.vendor,
-            "batteryPercent": if s.battery_percent >= 0 { serde_json::Value::from(s.battery_percent) } else { serde_json::Value::Null },
-            "batteryLeft": if s.battery_left >= 0 { serde_json::Value::from(s.battery_left) } else { serde_json::Value::Null },
-            "batteryRight": if s.battery_right >= 0 { serde_json::Value::from(s.battery_right) } else { serde_json::Value::Null },
-            "batteryCase": if s.battery_case >= 0 { serde_json::Value::from(s.battery_case) } else { serde_json::Value::Null },
-            "isCharging": s.is_charging,
-            "noiseMode": s.noise_mode,
-            "audioSink": s.audio_sink,
-        })).unwrap_or_else(|_| "{}".to_string())
+        self.manager.get_status_json().await
     }
 
     async fn list_devices(&self) -> String {
-        "[]".to_string()
+        let mgr = self.manager.clone();
+        self.manager.handle.spawn(async move {
+            mgr.list_devices_json().await
+        }).await.unwrap_or_else(|_| "[]".to_string())
     }
 
-    async fn connect(&self, _target: String) -> (bool, String) {
-        (true, "Connecting...".to_string())
+    async fn connect(&self, target: String) -> (bool, String) {
+        let mgr = self.manager.clone();
+        self.manager.handle.spawn(async move {
+            mgr.connect_device(&target).await
+        }).await.unwrap_or_else(|e| (false, format!("Tokio runtime spawn error: {}", e)))
     }
 
     async fn disconnect(&self) -> bool {
-        let mut s = self.state.write().await;
-        s.connected = false;
-        s.connection_state = "idle".to_string();
-        true
+        let mgr = self.manager.clone();
+        self.manager.handle.spawn(async move {
+            mgr.disconnect_device().await
+        }).await.unwrap_or(false)
     }
 
     async fn set_anc(&self, mode: String) -> (bool, String) {
-        let mut s = self.state.write().await;
-        s.noise_mode = mode.clone();
-        (true, format!("ANC mode set to: {}", mode))
+        let mgr = self.manager.clone();
+        self.manager.handle.spawn(async move {
+            mgr.set_anc(&mode).await
+        }).await.unwrap_or_else(|e| (false, format!("Tokio runtime spawn error: {}", e)))
     }
 
     async fn set_ambient_level(&self, _level: i32) -> bool {
@@ -185,37 +180,41 @@ impl ResonateDbusManager {
     }
 
     async fn set_wear_sensor(&self, enable: bool) -> bool {
-        let mut s = self.state.write().await;
-        s.ear_detection = enable;
-        true
+        let mgr = self.manager.clone();
+        self.manager.handle.spawn(async move {
+            mgr.set_ear_detection(enable).await
+        }).await.unwrap_or(false)
     }
 
     async fn set_conversation_awareness(&self, enable: bool) -> bool {
-        let mut s = self.state.write().await;
-        s.conv_aware = enable;
-        true
+        let mgr = self.manager.clone();
+        self.manager.handle.spawn(async move {
+            mgr.set_conversation_awareness(enable).await
+        }).await.unwrap_or(false)
     }
 
     async fn set_microphone_mode(&self, mode: String) -> bool {
-        let mut s = self.state.write().await;
-        s.mic_mode = mode;
-        true
+        let mgr = self.manager.clone();
+        self.manager.handle.spawn(async move {
+            mgr.set_mic_mode(&mode).await
+        }).await.unwrap_or(false)
     }
 
     async fn set_one_bud_anc(&self, enable: bool) -> bool {
-        let mut s = self.state.write().await;
-        s.one_bud_anc = enable;
-        true
+        let mgr = self.manager.clone();
+        self.manager.handle.spawn(async move {
+            mgr.set_one_bud_anc(enable).await
+        }).await.unwrap_or(false)
     }
 
     async fn set_touch_sensor(&self, enable: bool) -> bool {
-        let mut s = self.state.write().await;
+        let mut s = self.manager.state.write().await;
         s.touch_sensor = enable;
         true
     }
 
     async fn set_dsee(&self, enable: bool) -> bool {
-        let mut s = self.state.write().await;
+        let mut s = self.manager.state.write().await;
         s.dsee = enable;
         true
     }

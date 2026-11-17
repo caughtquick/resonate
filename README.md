@@ -3,7 +3,7 @@
 Resonate is a native Linux Bluetooth headphone daemon and CLI providing reverse-engineered, vendor-specific controls for supported **Apple / Beats** (AirPods, AirPods Pro, AirPods Max, Beats) and **Bowers & Wilkins** (Px7, Px8, Pi) wireless headphones.
 
 It brings first-class desktop integration to Linux:
-- **Resonate Studio GUI** (`resonate-gui`): Full-featured desktop application built with Slint providing real-time battery HUD, tactile ANC switching, interactive B&W parametric EQ curves, hardware personalization, and daemon supervision.
+- **Resonate Studio GUI** (`resonate-studio`): Full-featured desktop application built with Slint providing real-time battery HUD, tactile ANC switching, interactive B&W parametric EQ curves, hardware personalization, and daemon supervision.
 - **Active Noise Cancellation (ANC)** mode toggling (Off, Noise Cancellation, Transparency, Adaptive, Wind Reduction)
 - **Detailed battery telemetry** (left bud, right bud, charging case, and charging indicators)
 - **Smart auto-pause / auto-resume** via MPRIS when earbuds are removed or re-inserted
@@ -400,11 +400,11 @@ resonate completion fish > ~/.config/fish/completions/resonate.fish
 
 ## Resonate Studio (Desktop GUI)
 
-Resonate includes **Resonate Studio** (`resonate-gui`), a dedicated, hardware-accelerated desktop application built with [Slint](https://slint.dev/) designed for complete headphone management on modern Linux desktops (Wayland, Niri, GNOME, KDE, Sway).
+Resonate includes **Resonate Studio** (`resonate-studio`), a dedicated, hardware-accelerated desktop application built with [Slint](https://slint.dev/) designed for complete headphone management on modern Linux desktops (Wayland, Niri, GNOME, KDE, Sway).
 
 ```bash
 # Launch Resonate Studio
-resonate-gui
+resonate-studio
 ```
 
 ### Studio Features

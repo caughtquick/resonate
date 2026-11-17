@@ -2,11 +2,11 @@
 Name=Resonate Studio
 GenericName=Headphone Manager
 Comment=Native Linux Bluetooth headphone control studio for AirPods and Bowers & Wilkins
-Exec=resonate-gui
-Icon=audio-headphones
+Exec=resonate-studio
+Icon=resonate-studio
 Terminal=false
 Type=Application
 Categories=AudioVideo;Audio;Settings;HardwareSettings;
 Keywords=AirPods;Bowers;Wilkins;Bluetooth;Headphones;ANC;NoiseCancellation;Equalizer;
 StartupNotify=true
-StartupWMClass=resonate-gui
+StartupWMClass=resonate-studio

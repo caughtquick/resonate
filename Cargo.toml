@@ -29,6 +29,6 @@ name = "resonate"
 path = "src/main.rs"
 
 [[bin]]
-name = "resonate-gui"
+name = "resonate-studio"
 path = "src/gui_main.rs"
 

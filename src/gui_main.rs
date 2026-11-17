@@ -49,13 +49,13 @@ enum GuiCommand {
     RestartDaemon,
 }
 
-const DESKTOP_ENTRY_TEMPLATE: &str = include_str!("../assets/resonate-gui.desktop");
+const DESKTOP_ENTRY_TEMPLATE: &str = include_str!("../assets/resonate-studio.desktop");
 const ICON_SVG: &str = include_str!("../assets/icons/headphone.svg");
 
 fn print_help() {
     println!("Resonate Studio - Linux Bluetooth Headphone Management GUI\n");
     println!("USAGE:");
-    println!("    resonate-gui [OPTIONS]\n");
+    println!("    resonate-studio [OPTIONS]\n");
     println!("OPTIONS:");
     println!("    --install-desktop     Register Resonate Studio in your application menu (~/.local/share/applications)");
     println!("    --uninstall-desktop   Remove Resonate Studio from your application menu");
@@ -70,7 +70,11 @@ fn install_desktop_entry() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(&apps_dir)?;
     std::fs::create_dir_all(&icons_dir)?;
 
-    let icon_path = icons_dir.join("resonate-gui.svg");
+    // Clean up any legacy -gui files
+    let _ = std::fs::remove_file(apps_dir.join("resonate-gui.desktop"));
+    let _ = std::fs::remove_file(icons_dir.join("resonate-gui.svg"));
+
+    let icon_path = icons_dir.join("resonate-studio.svg");
     std::fs::write(&icon_path, ICON_SVG)?;
     println!("Installed icon: {}", icon_path.display());
 
@@ -80,10 +84,10 @@ fn install_desktop_entry() -> Result<(), Box<dyn std::error::Error>> {
         .to_string();
 
     let desktop_content = DESKTOP_ENTRY_TEMPLATE
-        .replace("Exec=resonate-gui", &format!("Exec={}", exec_path))
-        .replace("Icon=audio-headphones", "Icon=resonate-gui");
+        .replace("Exec=resonate-studio", &format!("Exec={}", exec_path))
+        .replace("Icon=resonate-studio", "Icon=resonate-studio");
 
-    let desktop_path = apps_dir.join("resonate-gui.desktop");
+    let desktop_path = apps_dir.join("resonate-studio.desktop");
     std::fs::write(&desktop_path, desktop_content)?;
     println!("Installed desktop entry: {}", desktop_path.display());
     println!("Executable configured: {}", exec_path);
@@ -102,8 +106,8 @@ fn install_desktop_entry() -> Result<(), Box<dyn std::error::Error>> {
 
 fn uninstall_desktop_entry() -> Result<(), Box<dyn std::error::Error>> {
     let home = std::env::var("HOME").map_err(|_| "HOME environment variable not set")?;
-    let desktop_path = std::path::PathBuf::from(&home).join(".local/share/applications/resonate-gui.desktop");
-    let icon_path = std::path::PathBuf::from(&home).join(".local/share/icons/hicolor/scalable/apps/resonate-gui.svg");
+    let desktop_path = std::path::PathBuf::from(&home).join(".local/share/applications/resonate-studio.desktop");
+    let icon_path = std::path::PathBuf::from(&home).join(".local/share/icons/hicolor/scalable/apps/resonate-studio.svg");
 
     if desktop_path.exists() {
         std::fs::remove_file(&desktop_path)?;
@@ -113,6 +117,12 @@ fn uninstall_desktop_entry() -> Result<(), Box<dyn std::error::Error>> {
         std::fs::remove_file(&icon_path)?;
         println!("Removed: {}", icon_path.display());
     }
+
+    // Also clean up any legacy -gui files if present
+    let legacy_desktop = std::path::PathBuf::from(&home).join(".local/share/applications/resonate-gui.desktop");
+    let legacy_icon = std::path::PathBuf::from(&home).join(".local/share/icons/hicolor/scalable/apps/resonate-gui.svg");
+    let _ = std::fs::remove_file(legacy_desktop);
+    let _ = std::fs::remove_file(legacy_icon);
 
     let apps_dir = std::path::PathBuf::from(&home).join(".local/share/applications");
     if let Ok(mut child) = std::process::Command::new("update-desktop-database")
@@ -218,6 +228,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         });
                     }
 
+                    // Spawn a periodic polling task to ensure telemetry stays 100% in sync
+                    let client_poll = client.clone();
+                    let weak_poll = weak_ui.clone();
+                    let poll_handle = tokio::spawn(async move {
+                        loop {
+                            tokio::time::sleep(Duration::from_millis(1500)).await;
+                            if let Ok(status) = client_poll.get_status().await {
+                                update_ui_status(&weak_poll, &status);
+                            } else {
+                                break;
+                            }
+                        }
+                    });
+
                     // Subscribe to StateChanged signals
                     if let Ok(mut stream) = client.subscribe_state_changed().await {
                         while let Some(msg) = stream.next().await {
@@ -245,7 +269,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
 
-                    // If stream closed, daemon likely disconnected
+                    poll_handle.abort();
                     *client_clone.lock().await = None;
                 }
                 Err(e) => {
@@ -277,78 +301,137 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tokio::spawn(async move {
         while let Some(cmd) = cmd_rx.recv().await {
-            let client_opt = client_cmd_clone.lock().await.clone();
+            // Reconnect client on-demand if not already connected
+            let mut client_res = client_cmd_clone.lock().await.clone();
+            if client_res.is_none() {
+                if let Ok(c) = ResonateDbusClient::connect().await {
+                    *client_cmd_clone.lock().await = Some(c.clone());
+                    client_res = Some(c);
+                }
+            }
 
             match cmd {
                 GuiCommand::SetAnc(mode) => {
-                    if let Some(c) = client_opt {
+                    let weak = weak_ui_cmd.clone();
+                    let m_clone = mode.clone();
+                    let _ = weak.upgrade_in_event_loop(move |ui| {
+                        ui.set_noise_mode(m_clone.into());
+                    });
+
+                    if let Some(c) = client_res.as_ref() {
                         let res = c.set_anc(&mode).await;
+                        let ok = res.as_ref().map(|(b, _)| *b).unwrap_or(false);
                         log_action(
                             &weak_ui_cmd,
                             &logs_store_cmd,
                             &format!("Set ANC mode: {}", mode),
-                            res.is_ok(),
+                            ok,
                         );
+                        if let Ok(status) = c.get_status().await {
+                            update_ui_status(&weak_ui_cmd, &status);
+                        }
                     }
                 }
                 GuiCommand::SetAutoPause(val) => {
-                    if let Some(c) = client_opt {
+                    let weak = weak_ui_cmd.clone();
+                    let _ = weak.upgrade_in_event_loop(move |ui| {
+                        ui.set_auto_pause(val);
+                    });
+
+                    if let Some(c) = client_res.as_ref() {
                         let res = c.set_auto_pause(val).await;
                         log_action(
                             &weak_ui_cmd,
                             &logs_store_cmd,
-                            &format!("Set Auto-Pause: {}", val),
-                            res.is_ok(),
+                            &format!("Set Auto-Pause: {}", if val { "Enabled" } else { "Disabled" }),
+                            res.unwrap_or(false),
                         );
+                        if let Ok(status) = c.get_status().await {
+                            update_ui_status(&weak_ui_cmd, &status);
+                        }
                     }
                 }
                 GuiCommand::SetConversationAwareness(val) => {
-                    if let Some(c) = client_opt {
+                    let weak = weak_ui_cmd.clone();
+                    let _ = weak.upgrade_in_event_loop(move |ui| {
+                        ui.set_conv_aware(val);
+                    });
+
+                    if let Some(c) = client_res.as_ref() {
                         let res = c.set_conversation_awareness(val).await;
                         log_action(
                             &weak_ui_cmd,
                             &logs_store_cmd,
-                            &format!("Set Conversation Awareness: {}", val),
-                            res.is_ok(),
+                            &format!("Set Conversation Awareness: {}", if val { "Enabled" } else { "Disabled" }),
+                            res.unwrap_or(false),
                         );
+                        if let Ok(status) = c.get_status().await {
+                            update_ui_status(&weak_ui_cmd, &status);
+                        }
                     }
                 }
                 GuiCommand::SetOneBudAnc(val) => {
-                    if let Some(c) = client_opt {
+                    let weak = weak_ui_cmd.clone();
+                    let _ = weak.upgrade_in_event_loop(move |ui| {
+                        ui.set_one_bud_anc(val);
+                    });
+
+                    if let Some(c) = client_res.as_ref() {
                         let res = c.set_one_bud_anc(val).await;
                         log_action(
                             &weak_ui_cmd,
                             &logs_store_cmd,
-                            &format!("Set Single-Bud ANC: {}", val),
-                            res.is_ok(),
+                            &format!("Set Single-Bud ANC: {}", if val { "Enabled" } else { "Disabled" }),
+                            res.unwrap_or(false),
                         );
+                        if let Ok(status) = c.get_status().await {
+                            update_ui_status(&weak_ui_cmd, &status);
+                        }
                     }
                 }
                 GuiCommand::SetWearSensor(val) => {
-                    if let Some(c) = client_opt {
+                    let weak = weak_ui_cmd.clone();
+                    let _ = weak.upgrade_in_event_loop(move |ui| {
+                        ui.set_ear_detection(val);
+                    });
+
+                    if let Some(c) = client_res.as_ref() {
                         let res = c.set_wear_sensor(val).await;
                         log_action(
                             &weak_ui_cmd,
                             &logs_store_cmd,
-                            &format!("Set Wear Sensor: {}", val),
-                            res.is_ok(),
+                            &format!("Set Wear Sensor: {}", if val { "Enabled" } else { "Disabled" }),
+                            res.unwrap_or(false),
                         );
+                        if let Ok(status) = c.get_status().await {
+                            update_ui_status(&weak_ui_cmd, &status);
+                        }
                     }
                 }
                 GuiCommand::SetEqualizer(bass, treble) => {
-                    if let Some(c) = client_opt {
+                    let weak = weak_ui_cmd.clone();
+                    let _ = weak.upgrade_in_event_loop(move |ui| {
+                        ui.set_bass_db(bass);
+                        ui.set_treble_db(treble);
+                    });
+
+                    if let Some(c) = client_res.as_ref() {
                         let args = format!("{:+0.1} {:+0.1}", bass, treble);
                         let res = c.set_equalizer(&args).await;
+                        let ok = res.as_ref().map(|(b, _)| *b).unwrap_or(false);
                         log_action(
                             &weak_ui_cmd,
                             &logs_store_cmd,
                             &format!("Set Equalizer: {}", args),
-                            res.is_ok(),
+                            ok,
                         );
+                        if let Ok(status) = c.get_status().await {
+                            update_ui_status(&weak_ui_cmd, &status);
+                        }
                     }
                 }
                 GuiCommand::ApplyPreset(preset) => {
-                    if let Some(c) = client_opt {
+                    if let Some(c) = client_res.as_ref() {
                         let args = match preset.as_str() {
                             "flat" => "0.0 0.0",
                             "bass_boost" => "+4.0 0.0",
@@ -357,93 +440,135 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             other => other,
                         };
                         let res = c.set_equalizer(args).await;
+                        let ok = res.as_ref().map(|(b, _)| *b).unwrap_or(false);
                         log_action(
                             &weak_ui_cmd,
                             &logs_store_cmd,
                             &format!("Applied Preset: {}", preset),
-                            res.is_ok(),
+                            ok,
                         );
+                        if let Ok(status) = c.get_status().await {
+                            update_ui_status(&weak_ui_cmd, &status);
+                        }
                     }
                 }
                 GuiCommand::SetMicrophoneMode(mode) => {
-                    if let Some(c) = client_opt {
+                    let weak = weak_ui_cmd.clone();
+                    let m_clone = mode.clone();
+                    let _ = weak.upgrade_in_event_loop(move |ui| {
+                        ui.set_mic_mode(m_clone.into());
+                    });
+
+                    if let Some(c) = client_res.as_ref() {
                         let res = c.set_microphone_mode(&mode).await;
                         log_action(
                             &weak_ui_cmd,
                             &logs_store_cmd,
                             &format!("Set Mic Mode: {}", mode),
-                            res.is_ok(),
+                            res.unwrap_or(false),
                         );
+                        if let Ok(status) = c.get_status().await {
+                            update_ui_status(&weak_ui_cmd, &status);
+                        }
                     }
                 }
                 GuiCommand::SetChimeVolume(vol) => {
-                    if let Some(c) = client_opt {
+                    let weak = weak_ui_cmd.clone();
+                    let _ = weak.upgrade_in_event_loop(move |ui| {
+                        ui.set_chime_volume(vol as i32);
+                    });
+
+                    if let Some(c) = client_res.as_ref() {
                         let res = c.set_chime_volume(vol).await;
                         log_action(
                             &weak_ui_cmd,
                             &logs_store_cmd,
                             &format!("Set Chime Volume: {}%", vol),
-                            res.is_ok(),
+                            res.unwrap_or(false),
                         );
+                        if let Ok(status) = c.get_status().await {
+                            update_ui_status(&weak_ui_cmd, &status);
+                        }
                     }
                 }
                 GuiCommand::SetStandby(val) => {
-                    if let Some(c) = client_opt {
+                    let weak = weak_ui_cmd.clone();
+                    let v_num: i32 = val.parse().unwrap_or(15);
+                    let _ = weak.upgrade_in_event_loop(move |ui| {
+                        ui.set_standby_minutes(v_num);
+                    });
+
+                    if let Some(c) = client_res.as_ref() {
                         let res = c.set_standby(&val).await;
                         log_action(
                             &weak_ui_cmd,
                             &logs_store_cmd,
                             &format!("Set Auto-Standby: {}", val),
-                            res.is_ok(),
+                            res.unwrap_or(false),
                         );
+                        if let Ok(status) = c.get_status().await {
+                            update_ui_status(&weak_ui_cmd, &status);
+                        }
                     }
                 }
                 GuiCommand::SetActionButton(action) => {
-                    if let Some(c) = client_opt {
+                    if let Some(c) = client_res.as_ref() {
                         let res = c.set_action_button(&action).await;
+                        let ok = res.as_ref().map(|(b, _)| *b).unwrap_or(false);
                         log_action(
                             &weak_ui_cmd,
                             &logs_store_cmd,
                             &format!("Set Action Button: {}", action),
-                            res.is_ok(),
+                            ok,
                         );
+                        if let Ok(status) = c.get_status().await {
+                            update_ui_status(&weak_ui_cmd, &status);
+                        }
                     }
                 }
                 GuiCommand::ConnectDevice(addr) => {
-                    if let Some(c) = client_opt {
+                    if let Some(c) = client_res.as_ref() {
                         let res = c.connect_device(&addr).await;
+                        let ok = res.as_ref().map(|(b, _)| *b).unwrap_or(false);
                         log_action(
                             &weak_ui_cmd,
                             &logs_store_cmd,
                             &format!("Connect Device: {}", addr),
-                            res.is_ok(),
+                            ok,
                         );
+                        if let Ok(status) = c.get_status().await {
+                            update_ui_status(&weak_ui_cmd, &status);
+                        }
                     }
                 }
                 GuiCommand::DisconnectDevice => {
-                    if let Some(c) = client_opt {
+                    if let Some(c) = client_res.as_ref() {
                         let res = c.disconnect_device().await;
                         log_action(
                             &weak_ui_cmd,
                             &logs_store_cmd,
                             "Disconnected device session",
-                            res.is_ok(),
+                            res.unwrap_or(false),
                         );
+                        if let Ok(status) = c.get_status().await {
+                            update_ui_status(&weak_ui_cmd, &status);
+                        }
                     }
                 }
                 GuiCommand::ConnectMultipoint(target) => {
-                    if let Some(c) = client_opt {
+                    if let Some(c) = client_res.as_ref() {
                         let res = c.connect_multipoint(&target).await;
+                        let ok = res.as_ref().map(|(b, _)| *b).unwrap_or(false);
                         log_action(
                             &weak_ui_cmd,
                             &logs_store_cmd,
                             &format!("Connect Multipoint: {}", target),
-                            res.is_ok(),
+                            ok,
                         );
                     }
                 }
                 GuiCommand::RefreshDevices => {
-                    if let Some(c) = client_opt {
+                    if let Some(c) = client_res.as_ref() {
                         if let Ok(devs) = c.list_devices().await {
                             let dev_entries: Vec<DeviceEntry> = devs
                                 .into_iter()

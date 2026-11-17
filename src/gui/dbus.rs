@@ -78,6 +78,16 @@ impl PairedDeviceDto {
             _ => "Bluetooth".to_string(),
         }
     }
+
+    /// Returns true if this device is recognized as a supported headphone (Apple or Bowers & Wilkins).
+    pub fn is_supported(&self) -> bool {
+        match &self.vendor {
+            Some(serde_json::Value::String(s)) => {
+                s == "Apple" || s == "BowersWilkins" || s == "Bowers & Wilkins"
+            }
+            _ => false,
+        }
+    }
 }
 
 /// Helper that parses bass and treble dB values from an equalizer string like `"Bass: +2.0 dB, Treble: -1.0 dB"`.
@@ -216,5 +226,30 @@ impl ResonateDbusClient {
     /// Subscribes to the `StateChanged(s)` signal stream.
     pub async fn subscribe_state_changed(&self) -> Result<zbus::proxy::SignalStream<'static>, zbus::Error> {
         self.proxy.receive_signal("StateChanged").await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_eq_gains() {
+        let (b, t) = parse_eq_gains("Bass: +3.0 dB, Treble: -1.5 dB");
+        assert_eq!(b, 3.0);
+        assert_eq!(t, -1.5);
+
+        let (b2, t2) = parse_eq_gains("Flat");
+        assert_eq!(b2, 0.0);
+        assert_eq!(t2, 0.0);
+    }
+
+    #[tokio::test]
+    async fn test_dbus_client_live_query() {
+        if let Ok(client) = ResonateDbusClient::connect().await {
+            if let Ok(status) = client.get_status().await {
+                assert!(!status.device_name.is_empty() || !status.connected);
+            }
+        }
     }
 }

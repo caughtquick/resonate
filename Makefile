@@ -22,23 +22,30 @@ uninstall-user:
 install: build
 	install -d "$(DESTDIR)$(BINDIR)"
 	install -m 755 target/release/resonate "$(DESTDIR)$(BINDIR)/resonate"
-	install -m 755 target/release/resonate-gui "$(DESTDIR)$(BINDIR)/resonate-gui"
+	install -m 755 target/release/resonate-studio "$(DESTDIR)$(BINDIR)/resonate-studio"
+	# Clean up any legacy -gui artifacts
+	rm -f "$(DESTDIR)$(BINDIR)/resonate-gui"
+	rm -f "$(DESTDIR)$(ICONS_DIR)/resonate-gui.svg"
+	rm -f "$(DESTDIR)$(APPLICATIONS_DIR)/resonate-gui.desktop"
 	install -d "$(DESTDIR)$(ICONS_DIR)"
-	install -m 644 assets/icons/headphone.svg "$(DESTDIR)$(ICONS_DIR)/resonate-gui.svg"
+	install -m 644 assets/icons/headphone.svg "$(DESTDIR)$(ICONS_DIR)/resonate-studio.svg"
 	install -d "$(DESTDIR)$(APPLICATIONS_DIR)"
-	sed -e 's|^Exec=.*|Exec=$(BINDIR)/resonate-gui|' \
-	    -e 's|^Icon=.*|Icon=resonate-gui|' \
-	    assets/resonate-gui.desktop > "$(DESTDIR)$(APPLICATIONS_DIR)/resonate-gui.desktop"
-	chmod 644 "$(DESTDIR)$(APPLICATIONS_DIR)/resonate-gui.desktop"
+	sed -e 's|^Exec=.*|Exec=$(BINDIR)/resonate-studio|' \
+	    -e 's|^Icon=.*|Icon=resonate-studio|' \
+	    assets/resonate-studio.desktop > "$(DESTDIR)$(APPLICATIONS_DIR)/resonate-studio.desktop"
+	chmod 644 "$(DESTDIR)$(APPLICATIONS_DIR)/resonate-studio.desktop"
 	@if [ -z "$(DESTDIR)" ] && command -v update-desktop-database >/dev/null 2>&1; then \
 		update-desktop-database "$(APPLICATIONS_DIR)" || true; \
 	fi
-	@echo "Resonate successfully installed to $(PREFIX)"
+	@echo "Resonate Studio successfully installed to $(PREFIX)"
 
 uninstall:
 	rm -f "$(DESTDIR)$(BINDIR)/resonate"
+	rm -f "$(DESTDIR)$(BINDIR)/resonate-studio"
 	rm -f "$(DESTDIR)$(BINDIR)/resonate-gui"
+	rm -f "$(DESTDIR)$(ICONS_DIR)/resonate-studio.svg"
 	rm -f "$(DESTDIR)$(ICONS_DIR)/resonate-gui.svg"
+	rm -f "$(DESTDIR)$(APPLICATIONS_DIR)/resonate-studio.desktop"
 	rm -f "$(DESTDIR)$(APPLICATIONS_DIR)/resonate-gui.desktop"
 	@if [ -z "$(DESTDIR)" ] && command -v update-desktop-database >/dev/null 2>&1; then \
 		update-desktop-database "$(APPLICATIONS_DIR)" || true; \

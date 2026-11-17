@@ -1,0 +1,452 @@
+import { Theme } from "theme.slint";
+import { DashboardPage } from "pages/dashboard.slint";
+import { EqualizerPage } from "pages/equalizer.slint";
+import { SettingsPage } from "pages/settings.slint";
+import { MultipointPage, DeviceEntry } from "pages/multipoint.slint";
+import { DiagnosticsPage, LogItem } from "pages/diagnostics.slint";
+
+export component MainWindow inherits Window {
+    title: "Resonate Studio";
+    min-width: 960px;
+    min-height: 640px;
+    preferred-width: 1040px;
+    preferred-height: 720px;
+    background: Theme.bg_main;
+
+    // Navigation State
+    in-out property <int> active_page: 0;
+
+    // Headphone State Properties
+    in-out property <bool> connected: false;
+    in-out property <string> connection_state: "idle";
+    in-out property <string> device_name: "No Headphone Connected";
+    in-out property <string> vendor: "Unknown";
+    in-out property <string> audio_sink: "Default Audio Sink";
+
+    // Telemetry Properties
+    in-out property <int> battery_percent: -1;
+    in-out property <int> battery_left: -1;
+    in-out property <int> battery_right: -1;
+    in-out property <int> battery_case: -1;
+    in-out property <bool> is_charging: false;
+    in-out property <string> in_ear_primary: "unknown";
+    in-out property <string> in_ear_secondary: "unknown";
+
+    // Noise Control
+    in-out property <string> noise_mode: "off";
+
+    // Equalizer
+    in-out property <float> bass_db: 0.0;
+    in-out property <float> treble_db: 0.0;
+
+    // Hardware Settings
+    in-out property <string> mic_mode: "auto";
+    in-out property <int> chime_volume: 80;
+    in-out property <int> standby_minutes: 15;
+    in-out property <int> wear_sensitivity: 1;
+    in-out property <bool> auto_pause: true;
+    in-out property <bool> conv_aware: false;
+    in-out property <bool> one_bud_anc: false;
+    in-out property <bool> ear_detection: true;
+
+    // Multipoint & Devices
+    in-out property <[DeviceEntry]> devices: [];
+
+    // Diagnostics & Service
+    in-out property <string> daemon_status: "Active (Running)";
+    in-out property <bool> daemon_running: true;
+    in-out property <[LogItem]> logs: [];
+
+    // Callbacks to Rust backend
+    callback set_anc(string);
+    callback set_auto_pause(bool);
+    callback set_conv_aware(bool);
+    callback set_one_bud_anc(bool);
+    callback set_ear_detection(bool);
+    callback set_equalizer(float, float);
+    callback apply_preset(string);
+    callback set_mic_mode(string);
+    callback set_chime_volume(int);
+    callback set_standby(string);
+    callback set_action_button(string);
+    callback connect_device(string);
+    callback disconnect_device(string);
+    callback connect_multipoint(string);
+    callback refresh_devices();
+    callback start_daemon();
+    callback stop_daemon();
+    callback restart_daemon();
+    callback clear_logs();
+
+    HorizontalLayout {
+        // SIDEBAR
+        Rectangle {
+            width: 240px;
+            background: Theme.bg_sidebar;
+            border-width: 0px;
+
+            VerticalLayout {
+                padding: 18px;
+                spacing: 16px;
+                alignment: space-between;
+
+                // Top: Brand & Nav Links
+                VerticalLayout {
+                    spacing: 24px;
+
+                    // Brand Header
+                    HorizontalLayout {
+                        spacing: 12px;
+                        alignment: start;
+
+                        Rectangle {
+                            width: 38px;
+                            height: 38px;
+                            border-radius: Theme.radius_md;
+                            background: Theme.accent;
+
+                            Image {
+                                source: @image-url("../assets/icons/headphone.svg");
+                                width: 20px;
+                                height: 20px;
+                                colorize: #ffffff;
+                            }
+                        }
+
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 1px;
+
+                            Text {
+                                text: "RESONATE";
+                                color: Theme.text_primary;
+                                font-size: 15px;
+                                font-weight: 800;
+                                letter-spacing: 1.5px;
+                            }
+
+                            Text {
+                                text: "Device Studio";
+                                color: Theme.accent_hover;
+                                font-size: 11px;
+                                font-weight: 600;
+                            }
+                        }
+                    }
+
+                    // Navigation Menu Items
+                    VerticalLayout {
+                        spacing: 6px;
+
+                        // Nav 0: Dashboard
+                        Rectangle {
+                            height: 40px;
+                            border-radius: Theme.radius_md;
+                            background: root.active_page == 0 ? Theme.accent_subtle : (touch0.has_hover ? Theme.bg_card_hover : #00000000);
+                            border-width: 1px;
+                            border-color: root.active_page == 0 ? Theme.accent : #00000000;
+
+                            HorizontalLayout {
+                                padding-left: 14px;
+                                spacing: 12px;
+                                alignment: start;
+
+                                Image {
+                                    source: @image-url("../assets/icons/headphone.svg");
+                                    width: 18px;
+                                    height: 18px;
+                                    colorize: root.active_page == 0 ? Theme.accent_hover : Theme.text_muted;
+                                    vertical-alignment: center;
+                                }
+
+                                Text {
+                                    text: "Dashboard";
+                                    color: root.active_page == 0 ? #ffffff : Theme.text_secondary;
+                                    font-size: 13px;
+                                    font-weight: root.active_page == 0 ? 600 : 500;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            touch0 := TouchArea { clicked => { root.active_page = 0; } }
+                        }
+
+                        // Nav 1: Equalizer
+                        Rectangle {
+                            height: 40px;
+                            border-radius: Theme.radius_md;
+                            background: root.active_page == 1 ? Theme.accent_subtle : (touch1.has_hover ? Theme.bg_card_hover : #00000000);
+                            border-width: 1px;
+                            border-color: root.active_page == 1 ? Theme.accent : #00000000;
+
+                            HorizontalLayout {
+                                padding-left: 14px;
+                                spacing: 12px;
+                                alignment: start;
+
+                                Image {
+                                    source: @image-url("../assets/icons/sliders.svg");
+                                    width: 18px;
+                                    height: 18px;
+                                    colorize: root.active_page == 1 ? Theme.accent_hover : Theme.text_muted;
+                                    vertical-alignment: center;
+                                }
+
+                                Text {
+                                    text: "Equalizer Studio";
+                                    color: root.active_page == 1 ? #ffffff : Theme.text_secondary;
+                                    font-size: 13px;
+                                    font-weight: root.active_page == 1 ? 600 : 500;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            touch1 := TouchArea { clicked => { root.active_page = 1; } }
+                        }
+
+                        // Nav 2: Settings
+                        Rectangle {
+                            height: 40px;
+                            border-radius: Theme.radius_md;
+                            background: root.active_page == 2 ? Theme.accent_subtle : (touch2.has_hover ? Theme.bg_card_hover : #00000000);
+                            border-width: 1px;
+                            border-color: root.active_page == 2 ? Theme.accent : #00000000;
+
+                            HorizontalLayout {
+                                padding-left: 14px;
+                                spacing: 12px;
+                                alignment: start;
+
+                                Image {
+                                    source: @image-url("../assets/icons/settings.svg");
+                                    width: 18px;
+                                    height: 18px;
+                                    colorize: root.active_page == 2 ? Theme.accent_hover : Theme.text_muted;
+                                    vertical-alignment: center;
+                                }
+
+                                Text {
+                                    text: "Hardware Settings";
+                                    color: root.active_page == 2 ? #ffffff : Theme.text_secondary;
+                                    font-size: 13px;
+                                    font-weight: root.active_page == 2 ? 600 : 500;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            touch2 := TouchArea { clicked => { root.active_page = 2; } }
+                        }
+
+                        // Nav 3: Multipoint & Devices
+                        Rectangle {
+                            height: 40px;
+                            border-radius: Theme.radius_md;
+                            background: root.active_page == 3 ? Theme.accent_subtle : (touch3.has_hover ? Theme.bg_card_hover : #00000000);
+                            border-width: 1px;
+                            border-color: root.active_page == 3 ? Theme.accent : #00000000;
+
+                            HorizontalLayout {
+                                padding-left: 14px;
+                                spacing: 12px;
+                                alignment: start;
+
+                                Image {
+                                    source: @image-url("../assets/icons/bluetooth.svg");
+                                    width: 18px;
+                                    height: 18px;
+                                    colorize: root.active_page == 3 ? Theme.accent_hover : Theme.text_muted;
+                                    vertical-alignment: center;
+                                }
+
+                                Text {
+                                    text: "Devices & Multipoint";
+                                    color: root.active_page == 3 ? #ffffff : Theme.text_secondary;
+                                    font-size: 13px;
+                                    font-weight: root.active_page == 3 ? 600 : 500;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            touch3 := TouchArea { clicked => { root.active_page = 3; } }
+                        }
+
+                        // Nav 4: Diagnostics
+                        Rectangle {
+                            height: 40px;
+                            border-radius: Theme.radius_md;
+                            background: root.active_page == 4 ? Theme.accent_subtle : (touch4.has_hover ? Theme.bg_card_hover : #00000000);
+                            border-width: 1px;
+                            border-color: root.active_page == 4 ? Theme.accent : #00000000;
+
+                            HorizontalLayout {
+                                padding-left: 14px;
+                                spacing: 12px;
+                                alignment: start;
+
+                                Image {
+                                    source: @image-url("../assets/icons/activity.svg");
+                                    width: 18px;
+                                    height: 18px;
+                                    colorize: root.active_page == 4 ? Theme.accent_hover : Theme.text_muted;
+                                    vertical-alignment: center;
+                                }
+
+                                Text {
+                                    text: "Diagnostics";
+                                    color: root.active_page == 4 ? #ffffff : Theme.text_secondary;
+                                    font-size: 13px;
+                                    font-weight: root.active_page == 4 ? 600 : 500;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            touch4 := TouchArea { clicked => { root.active_page = 4; } }
+                        }
+                    }
+                }
+
+                // Bottom Sidebar: Status Card
+                Rectangle {
+                    background: Theme.bg_card;
+                    border-radius: Theme.radius_md;
+                    border-width: 1px;
+                    border-color: Theme.border;
+
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 8px;
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: start;
+
+                            VerticalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    width: 8px;
+                                    height: 8px;
+                                    border-radius: 4px;
+                                    background: root.connected ? Theme.success : Theme.danger;
+                                }
+                            }
+
+                            Text {
+                                text: root.connected ? (root.device_name != "" ? root.device_name : "Connected") : "Disconnected";
+                                color: Theme.text_primary;
+                                font-size: 12px;
+                                font-weight: 600;
+                                overflow: elide;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        if root.connected : HorizontalLayout {
+                            alignment: space-between;
+
+                            Text {
+                                text: "Battery: " + (root.battery_percent >= 0 ? (root.battery_percent + "%") : (root.battery_left >= 0 ? (root.battery_left + "% / " + root.battery_right + "%") : "--"));
+                                color: Theme.text_secondary;
+                                font-size: 11px;
+                            }
+
+                            if root.is_charging : Image {
+                                source: @image-url("../assets/icons/bolt.svg");
+                                width: 12px;
+                                height: 12px;
+                                colorize: Theme.success;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        Text {
+                            text: "Resonate Linux v0.1.0";
+                            color: Theme.text_disabled;
+                            font-size: 10px;
+                        }
+                    }
+                }
+            }
+        }
+
+        // CONTENT CANVAS
+        Rectangle {
+            background: Theme.bg_main;
+
+            if root.active_page == 0 : DashboardPage {
+                device_name: root.device_name;
+                vendor: root.vendor;
+                connection_state: root.connection_state;
+                connected: root.connected;
+                audio_sink: root.audio_sink;
+                battery_percent: root.battery_percent;
+                battery_left: root.battery_left;
+                battery_right: root.battery_right;
+                battery_case: root.battery_case;
+                is_charging: root.is_charging;
+                in_ear_primary: root.in_ear_primary;
+                in_ear_secondary: root.in_ear_secondary;
+                noise_mode: root.noise_mode;
+                auto_pause <=> root.auto_pause;
+                conv_aware <=> root.conv_aware;
+                one_bud_anc <=> root.one_bud_anc;
+                ear_detection <=> root.ear_detection;
+                set_anc(mode) => { root.set_anc(mode); }
+                set_auto_pause(val) => { root.set_auto_pause(val); }
+                set_conv_aware(val) => { root.set_conv_aware(val); }
+                set_one_bud_anc(val) => { root.set_one_bud_anc(val); }
+                set_ear_detection(val) => { root.set_ear_detection(val); }
+                disconnect_clicked => { root.disconnect_device(""); }
+            }
+
+            if root.active_page == 1 : EqualizerPage {
+                device_name: root.device_name;
+                vendor: root.vendor;
+                is_connected_bw: root.vendor == "Bowers & Wilkins";
+                bass_db <=> root.bass_db;
+                treble_db <=> root.treble_db;
+                set_equalizer(b, t) => { root.set_equalizer(b, t); }
+                apply_preset(p) => { root.apply_preset(p); }
+            }
+
+            if root.active_page == 2 : SettingsPage {
+                vendor: root.vendor;
+                mic_mode: root.mic_mode;
+                chime_volume <=> root.chime_volume;
+                standby_minutes: root.standby_minutes;
+                wear_sensitivity: root.wear_sensitivity;
+                auto_pause <=> root.auto_pause;
+                conv_aware <=> root.conv_aware;
+                one_bud_anc <=> root.one_bud_anc;
+                ear_detection <=> root.ear_detection;
+                set_mic_mode(m) => { root.set_mic_mode(m); }
+                set_chime_volume(v) => { root.set_chime_volume(v); }
+                set_standby(s) => { root.set_standby(s); }
+                set_action_button(a) => { root.set_action_button(a); }
+                set_auto_pause(v) => { root.set_auto_pause(v); }
+                set_conv_aware(v) => { root.set_conv_aware(v); }
+                set_one_bud_anc(v) => { root.set_one_bud_anc(v); }
+                set_ear_detection(v) => { root.set_ear_detection(v); }
+            }
+
+            if root.active_page == 3 : MultipointPage {
+                devices: root.devices;
+                is_connected_bw: root.vendor == "Bowers & Wilkins";
+                connect_device(addr) => { root.connect_device(addr); }
+                disconnect_device(addr) => { root.disconnect_device(addr); }
+                connect_multipoint(addr) => { root.connect_multipoint(addr); }
+                refresh_devices => { root.refresh_devices(); }
+            }
+
+            if root.active_page == 4 : DiagnosticsPage {
+                daemon_status: root.daemon_status;
+                daemon_running: root.daemon_running;
+                audio_sink: root.audio_sink;
+                logs: root.logs;
+                start_daemon => { root.start_daemon(); }
+                stop_daemon => { root.stop_daemon(); }
+                restart_daemon => { root.restart_daemon(); }
+                clear_logs => { root.clear_logs(); }
+            }
+        }
+    }
+}

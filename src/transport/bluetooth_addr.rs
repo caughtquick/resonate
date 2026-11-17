@@ -1,7 +1,7 @@
 //! Low-level Bluetooth address representation and libc socket address structures.
 //!
 //! Provides the [`BdAddr`] type representing a 6-byte Bluetooth MAC address,
-//! along with C-compatible `sockaddr` structures for AF_BLUETOOTH L2CAP and RFCOMM sockets.
+//! along with C-compatible `sockaddr` structures for AF_BLUETOOTH L2CAP sockets.
 
 /// A 6-byte Bluetooth Hardware Device Address (BD_ADDR).
 ///
@@ -61,9 +61,6 @@ pub const AF_BLUETOOTH: libc::sa_family_t = 31;
 /// Protocol constant for L2CAP sockets (`BTPROTO_L2CAP = 0`).
 pub const BTPROTO_L2CAP: i32 = 0;
 
-/// Protocol constant for RFCOMM sockets (`BTPROTO_RFCOMM = 3`).
-pub const BTPROTO_RFCOMM: i32 = 3;
-
 /// C-compatible socket address structure for L2CAP sockets (`sockaddr_l2`).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -78,18 +75,6 @@ pub struct SockAddrL2 {
     pub l2_cid: u16,
     /// Address type (0 for standard BR/EDR address).
     pub l2_bdaddr_type: u8,
-}
-
-/// C-compatible socket address structure for RFCOMM sockets (`sockaddr_rc`).
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct SockAddrRc {
-    /// Socket family (always [`AF_BLUETOOTH`]).
-    pub rc_family: libc::sa_family_t,
-    /// Remote or local Bluetooth device address.
-    pub rc_bdaddr: BdAddr,
-    /// RFCOMM channel number (1-30).
-    pub rc_channel: u8,
 }
 
 #[cfg(test)]

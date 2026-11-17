@@ -2,7 +2,7 @@
 //!
 //! Interacts with BlueZ's standard `org.bluez.Device1` interfaces via D-Bus ObjectManager
 //! to discover paired devices, extract hardware modalias strings, identify device manufacturers
-//! (Apple, Sony, Bowers & Wilkins), and report initial battery levels.
+//! (Apple, Bowers & Wilkins), and report initial battery levels.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -19,8 +19,6 @@ pub enum DeviceVendor {
     Apple,
     /// Bowers & Wilkins (Px / Pi series).
     BowersWilkins,
-    /// Sony Corporation (WH / WF / MDR / LinkBuds series).
-    Sony,
     /// Unidentified or unsupported Bluetooth device.
     Unknown,
 }
@@ -30,7 +28,6 @@ impl std::fmt::Display for DeviceVendor {
         match self {
             DeviceVendor::Apple => write!(f, "Apple"),
             DeviceVendor::BowersWilkins => write!(f, "Bowers & Wilkins"),
-            DeviceVendor::Sony => write!(f, "Sony"),
             DeviceVendor::Unknown => write!(f, "Unknown"),
         }
     }
@@ -60,7 +57,7 @@ pub struct PairedDevice {
 }
 
 impl PairedDevice {
-    /// Returns true if this device is recognized as Apple, Sony, or Bowers & Wilkins.
+    /// Returns true if this device is recognized as Apple or Bowers & Wilkins.
     pub fn is_supported(&self) -> bool {
         self.vendor != DeviceVendor::Unknown
     }
@@ -128,7 +125,7 @@ impl BluetoothInventory {
                         AppleModel::from_name(&name)
                     };
                     model_name = Some(apple_model.display_name().to_string());
-                } else if vendor == DeviceVendor::BowersWilkins || vendor == DeviceVendor::Sony {
+                } else if vendor == DeviceVendor::BowersWilkins {
                     model_name = Some(name.clone());
                 }
 
@@ -200,26 +197,6 @@ pub fn identify_vendor(name: &str, modalias: Option<&str>, uuids: &[String]) -> 
         || lower_name.contains("bowers & wilkins")
     {
         return DeviceVendor::BowersWilkins;
-    }
-
-    // 3. Sony
-    // Vendor ID 0x054C
-    if lower_modalias.contains("v054c") {
-        return DeviceVendor::Sony;
-    }
-    for u in uuids {
-        if u.to_lowercase()
-            .contains("96e42634-4390-4e9b-b09d-00c7716a3b37")
-        {
-            return DeviceVendor::Sony;
-        }
-    }
-    if lower_name.contains("wh-1000")
-        || lower_name.contains("wf-1000")
-        || lower_name.contains("linkbuds")
-        || lower_name.contains("mdr-")
-    {
-        return DeviceVendor::Sony;
     }
 
     DeviceVendor::Unknown

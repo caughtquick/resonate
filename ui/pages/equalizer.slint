@@ -1,0 +1,117 @@
+import { Theme } from "../theme.slint";
+import { EqualizerStudio } from "../widgets/eq_curve.slint";
+import { ScrollView } from "std-widgets.slint";
+
+export component EqualizerPage inherits ScrollView {
+    in property <string> device_name: "";
+    in property <string> vendor: "Bowers & Wilkins";
+    in property <bool> is_connected_bw: true;
+    in-out property <float> bass_db: 0.0;
+    in-out property <float> treble_db: 0.0;
+
+    callback set_equalizer(float, float);
+    callback apply_preset(string);
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 20px;
+        alignment: start;
+
+        // Header
+        VerticalLayout {
+            spacing: 6px;
+
+            Text {
+                text: "Acoustic & EQ Studio";
+                color: Theme.text_primary;
+                font-size: 22px;
+                font-weight: 700;
+            }
+
+            Text {
+                text: "Hardware-level digital signal processing and sound profile controls for " + (root.device_name != "" ? root.device_name : "Bowers & Wilkins headphones");
+                color: Theme.text_secondary;
+                font-size: 13px;
+            }
+        }
+
+        if !root.is_connected_bw : Rectangle {
+            background: #f59e0b18;
+            border-radius: Theme.radius_md;
+            border-width: 1px;
+            border-color: #f59e0b44;
+            height: 64px;
+
+            HorizontalLayout {
+                padding-left: 18px;
+                padding-right: 18px;
+                spacing: 14px;
+                alignment: start;
+
+                Text {
+                    text: "ℹ";
+                    color: Theme.warning;
+                    font-size: 20px;
+                    vertical-alignment: center;
+                }
+
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 2px;
+
+                    Text {
+                        text: "Hardware Tone Controls Unavailable";
+                        color: Theme.text_primary;
+                        font-size: 13px;
+                        font-weight: 600;
+                    }
+
+                    Text {
+                        text: "Hardware 2-band Bass/Treble EQ is supported on Bowers & Wilkins headphones (Px7 S2, Px8, PI). Connect a B&W device to enable.";
+                        color: Theme.text_secondary;
+                        font-size: 12px;
+                    }
+                }
+            }
+        }
+
+        // The Equalizer Studio widget
+        EqualizerStudio {
+            bass_db <=> root.bass_db;
+            treble_db <=> root.treble_db;
+            is_connected_bw: root.is_connected_bw;
+            eq_changed(b, t) => {
+                root.set_equalizer(b, t);
+            }
+            preset_applied(preset) => {
+                root.apply_preset(preset);
+            }
+        }
+
+        // Info card about audio profile
+        Rectangle {
+            background: Theme.bg_card;
+            border-radius: Theme.radius_md;
+            border-width: 1px;
+            border-color: Theme.border;
+
+            VerticalLayout {
+                padding: 18px;
+                spacing: 8px;
+
+                Text {
+                    text: "About Hardware Equalization";
+                    color: Theme.text_primary;
+                    font-size: 14px;
+                    font-weight: 600;
+                }
+
+                Text {
+                    text: "Resonate tunes the hardware DSP directly inside the headphones via custom BLE GATT MessagePack RPC. Changes are persisted in the headphone's internal firmware and remain active across power cycles and paired devices.";
+                    color: Theme.text_secondary;
+                    font-size: 12px;
+                }
+            }
+        }
+    }
+}

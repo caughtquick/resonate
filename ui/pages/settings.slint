@@ -1,0 +1,432 @@
+import { Theme } from "../theme.slint";
+import { SettingSwitchRow } from "../widgets/switch_row.slint";
+import { Slider, ScrollView } from "std-widgets.slint";
+
+export component SettingsPage inherits ScrollView {
+    in property <string> vendor: "Apple";
+    in property <string> mic_mode: "auto";
+    in-out property <int> chime_volume: 80;
+    in property <int> standby_minutes: 15;
+    in property <int> wear_sensitivity: 1;
+
+    in-out property <bool> auto_pause: true;
+    in-out property <bool> conv_aware: false;
+    in-out property <bool> one_bud_anc: false;
+    in-out property <bool> ear_detection: true;
+
+    callback set_mic_mode(string);
+    callback set_chime_volume(int);
+    callback set_standby(string);
+    callback set_action_button(string);
+    callback set_wear_sensitivity(string);
+    callback set_auto_pause(bool);
+    callback set_conv_aware(bool);
+    callback set_one_bud_anc(bool);
+    callback set_ear_detection(bool);
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 20px;
+        alignment: start;
+
+        // Title
+        VerticalLayout {
+            spacing: 6px;
+
+            Text {
+                text: "Hardware & Audio Settings";
+                color: Theme.text_primary;
+                font-size: 22px;
+                font-weight: 700;
+            }
+
+            Text {
+                text: "Configure physical sensor behaviors, audio routing, alert tones, and standby timers";
+                color: Theme.text_secondary;
+                font-size: 13px;
+            }
+        }
+
+        // Section: Apple / Beats Personalization
+        VerticalLayout {
+            spacing: 12px;
+
+            Text {
+                text: "APPLE & BEATS HARDWARE CONTROLS";
+                color: Theme.text_muted;
+                font-size: 11px;
+                font-weight: 700;
+                letter-spacing: 1px;
+            }
+
+            // Microphone routing card
+            Rectangle {
+                background: Theme.bg_card;
+                border-radius: Theme.radius_md;
+                border-width: 1px;
+                border-color: Theme.border;
+
+                VerticalLayout {
+                    padding: 18px;
+                    spacing: 12px;
+
+                    HorizontalLayout {
+                        alignment: space-between;
+
+                        VerticalLayout {
+                            spacing: 3px;
+
+                            Text {
+                                text: "Microphone Earbud Selection";
+                                color: Theme.text_primary;
+                                font-size: 14px;
+                                font-weight: 600;
+                            }
+
+                            Text {
+                                text: "Determines which earbud microphone is actively routed to PipeWire/PulseAudio input";
+                                color: Theme.text_secondary;
+                                font-size: 12px;
+                            }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 10px;
+
+                        // Auto
+                        Rectangle {
+                            border-radius: Theme.radius_pill;
+                            background: root.mic_mode == "auto" ? Theme.accent : Theme.bg_input;
+                            border-width: 1px;
+                            border-color: root.mic_mode == "auto" ? Theme.accent : Theme.border;
+                            height: 34px;
+
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 16px;
+
+                                Text {
+                                    text: "Automatic (Optimal)";
+                                    color: root.mic_mode == "auto" ? #ffffff : Theme.text_secondary;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            TouchArea { clicked => { root.set_mic_mode("auto"); } }
+                        }
+
+                        // Always Left
+                        Rectangle {
+                            border-radius: Theme.radius_pill;
+                            background: root.mic_mode == "left" ? Theme.accent : Theme.bg_input;
+                            border-width: 1px;
+                            border-color: root.mic_mode == "left" ? Theme.accent : Theme.border;
+                            height: 34px;
+
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 16px;
+
+                                Text {
+                                    text: "Always Left Earbud";
+                                    color: root.mic_mode == "left" ? #ffffff : Theme.text_secondary;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            TouchArea { clicked => { root.set_mic_mode("left"); } }
+                        }
+
+                        // Always Right
+                        Rectangle {
+                            border-radius: Theme.radius_pill;
+                            background: root.mic_mode == "right" ? Theme.accent : Theme.bg_input;
+                            border-width: 1px;
+                            border-color: root.mic_mode == "right" ? Theme.accent : Theme.border;
+                            height: 34px;
+
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 16px;
+
+                                Text {
+                                    text: "Always Right Earbud";
+                                    color: root.mic_mode == "right" ? #ffffff : Theme.text_secondary;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            TouchArea { clicked => { root.set_mic_mode("right"); } }
+                        }
+                    }
+                }
+            }
+
+            // Chime Volume Slider Card
+            Rectangle {
+                background: Theme.bg_card;
+                border-radius: Theme.radius_md;
+                border-width: 1px;
+                border-color: Theme.border;
+
+                VerticalLayout {
+                    padding: 18px;
+                    spacing: 12px;
+
+                    HorizontalLayout {
+                        alignment: space-between;
+
+                        VerticalLayout {
+                            spacing: 3px;
+
+                            Text {
+                                text: "Tone & Chime Volume (AirPods Pro 2)";
+                                color: Theme.text_primary;
+                                font-size: 14px;
+                                font-weight: 600;
+                            }
+
+                            Text {
+                                text: "Volume of audio alerts played by the charging case speaker and earbuds";
+                                color: Theme.text_secondary;
+                                font-size: 12px;
+                            }
+                        }
+
+                        Text {
+                            text: root.chime_volume + "%";
+                            color: Theme.accent_hover;
+                            font-size: 14px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    Slider {
+                        minimum: 0;
+                        maximum: 100;
+                        value: root.chime_volume;
+                        changed(val) => {
+                            root.chime_volume = Math.round(val);
+                            root.set_chime_volume(Math.round(val));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Section: Bowers & Wilkins Hardware Controls
+        VerticalLayout {
+            spacing: 12px;
+
+            Text {
+                text: "BOWERS & WILKINS HARDWARE CONTROLS";
+                color: Theme.text_muted;
+                font-size: 11px;
+                font-weight: 700;
+                letter-spacing: 1px;
+            }
+
+            // Standby Timer Card
+            Rectangle {
+                background: Theme.bg_card;
+                border-radius: Theme.radius_md;
+                border-width: 1px;
+                border-color: Theme.border;
+
+                VerticalLayout {
+                    padding: 18px;
+                    spacing: 12px;
+
+                    VerticalLayout {
+                        spacing: 3px;
+
+                        Text {
+                            text: "Auto-Standby Sleep Timer";
+                            color: Theme.text_primary;
+                            font-size: 14px;
+                            font-weight: 600;
+                        }
+
+                        Text {
+                            text: "Automatically powers off the headphones after inactivity to preserve battery";
+                            color: Theme.text_secondary;
+                            font-size: 12px;
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 10px;
+
+                        Rectangle {
+                            border-radius: Theme.radius_pill;
+                            background: root.standby_minutes == 0 ? Theme.accent : Theme.bg_input;
+                            border-width: 1px;
+                            border-color: root.standby_minutes == 0 ? Theme.accent : Theme.border;
+                            height: 32px;
+
+                            HorizontalLayout {
+                                padding-left: 14px;
+                                padding-right: 14px;
+
+                                Text {
+                                    text: "Never";
+                                    color: root.standby_minutes == 0 ? #ffffff : Theme.text_secondary;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            TouchArea { clicked => { root.set_standby("never"); } }
+                        }
+
+                        Rectangle {
+                            border-radius: Theme.radius_pill;
+                            background: root.standby_minutes == 10 ? Theme.accent : Theme.bg_input;
+                            border-width: 1px;
+                            border-color: root.standby_minutes == 10 ? Theme.accent : Theme.border;
+                            height: 32px;
+
+                            HorizontalLayout {
+                                padding-left: 14px;
+                                padding-right: 14px;
+
+                                Text {
+                                    text: "10 Minutes";
+                                    color: root.standby_minutes == 10 ? #ffffff : Theme.text_secondary;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            TouchArea { clicked => { root.set_standby("10m"); } }
+                        }
+
+                        Rectangle {
+                            border-radius: Theme.radius_pill;
+                            background: root.standby_minutes == 15 ? Theme.accent : Theme.bg_input;
+                            border-width: 1px;
+                            border-color: root.standby_minutes == 15 ? Theme.accent : Theme.border;
+                            height: 32px;
+
+                            HorizontalLayout {
+                                padding-left: 14px;
+                                padding-right: 14px;
+
+                                Text {
+                                    text: "15 Minutes";
+                                    color: root.standby_minutes == 15 ? #ffffff : Theme.text_secondary;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            TouchArea { clicked => { root.set_standby("15m"); } }
+                        }
+
+                        Rectangle {
+                            border-radius: Theme.radius_pill;
+                            background: root.standby_minutes == 30 ? Theme.accent : Theme.bg_input;
+                            border-width: 1px;
+                            border-color: root.standby_minutes == 30 ? Theme.accent : Theme.border;
+                            height: 32px;
+
+                            HorizontalLayout {
+                                padding-left: 14px;
+                                padding-right: 14px;
+
+                                Text {
+                                    text: "30 Minutes";
+                                    color: root.standby_minutes == 30 ? #ffffff : Theme.text_secondary;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            TouchArea { clicked => { root.set_standby("30m"); } }
+                        }
+                    }
+                }
+            }
+
+            // Quick Action Button Card
+            Rectangle {
+                background: Theme.bg_card;
+                border-radius: Theme.radius_md;
+                border-width: 1px;
+                border-color: Theme.border;
+
+                VerticalLayout {
+                    padding: 18px;
+                    spacing: 12px;
+
+                    VerticalLayout {
+                        spacing: 3px;
+
+                        Text {
+                            text: "Physical Quick Action Button";
+                            color: Theme.text_primary;
+                            font-size: 14px;
+                            font-weight: 600;
+                        }
+
+                        Text {
+                            text: "Remaps the hardware button on the left earcup";
+                            color: Theme.text_secondary;
+                            font-size: 12px;
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 10px;
+
+                        Rectangle {
+                            border-radius: Theme.radius_pill;
+                            background: Theme.accent;
+                            height: 34px;
+
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 16px;
+
+                                Text {
+                                    text: "Toggle Listening Modes (ANC)";
+                                    color: #ffffff;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            TouchArea { clicked => { root.set_action_button("anc"); } }
+                        }
+
+                        Rectangle {
+                            border-radius: Theme.radius_pill;
+                            background: Theme.bg_input;
+                            border-width: 1px;
+                            border-color: Theme.border;
+                            height: 34px;
+
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 16px;
+
+                                Text {
+                                    text: "Trigger Voice Assistant";
+                                    color: Theme.text_secondary;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            TouchArea { clicked => { root.set_action_button("voice"); } }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

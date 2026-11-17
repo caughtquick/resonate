@@ -1,0 +1,357 @@
+import { Theme } from "../theme.slint";
+import { BatteryPod } from "../widgets/battery_card.slint";
+import { AncModeCard } from "../widgets/anc_selector.slint";
+import { SettingSwitchRow } from "../widgets/switch_row.slint";
+import { ScrollView } from "std-widgets.slint";
+
+export component DashboardPage inherits ScrollView {
+    in property <string> device_name: "No Headphone Connected";
+    in property <string> vendor: "Unknown";
+    in property <string> connection_state: "disconnected";
+    in property <bool> connected: false;
+    in property <string> audio_sink: "No active audio sink";
+
+    // Telemetry
+    in property <int> battery_percent: -1;
+    in property <int> battery_left: -1;
+    in property <int> battery_right: -1;
+    in property <int> battery_case: -1;
+    in property <bool> is_charging: false;
+    in property <string> in_ear_primary: "unknown";
+    in property <string> in_ear_secondary: "unknown";
+
+    // Mode
+    in property <string> noise_mode: "off";
+
+    // Toggles
+    in-out property <bool> auto_pause: true;
+    in-out property <bool> conv_aware: false;
+    in-out property <bool> one_bud_anc: false;
+    in-out property <bool> ear_detection: true;
+
+    callback set_anc(string);
+    callback set_auto_pause(bool);
+    callback set_conv_aware(bool);
+    callback set_one_bud_anc(bool);
+    callback set_ear_detection(bool);
+    callback connect_clicked();
+    callback disconnect_clicked();
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 20px;
+        alignment: start;
+
+        // HERO DEVICE CARD
+        Rectangle {
+            background: Theme.bg_card;
+            border-radius: Theme.radius_lg;
+            border-width: 1px;
+            border-color: Theme.border;
+
+            VerticalLayout {
+                padding: 20px;
+                spacing: 16px;
+
+                HorizontalLayout {
+                    alignment: space-between;
+
+                    HorizontalLayout {
+                        spacing: 16px;
+                        alignment: start;
+
+                        // Big device avatar
+                        Rectangle {
+                            width: 52px;
+                            height: 52px;
+                            border-radius: Theme.radius_md;
+                            background: root.connected ? Theme.accent_subtle : Theme.bg_input;
+                            border-width: 1px;
+                            border-color: root.connected ? Theme.accent : Theme.border;
+
+                            Image {
+                                source: @image-url("../../assets/icons/headphone.svg");
+                                width: 24px;
+                                height: 24px;
+                                colorize: root.connected ? Theme.accent_hover : Theme.text_muted;
+                            }
+                        }
+
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 4px;
+
+                            HorizontalLayout {
+                                spacing: 10px;
+                                alignment: start;
+
+                                Text {
+                                    text: root.device_name != "" ? root.device_name : "Disconnected";
+                                    color: Theme.text_primary;
+                                    font-size: 18px;
+                                    font-weight: 700;
+                                }
+
+                                if root.vendor != "" && root.vendor != "Unknown" : Rectangle {
+                                    border-radius: Theme.radius_pill;
+                                    background: Theme.bg_input;
+                                    border-width: 1px;
+                                    border-color: Theme.border;
+                                    height: 22px;
+
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        padding-right: 8px;
+
+                                        Text {
+                                            text: root.vendor;
+                                            color: Theme.text_secondary;
+                                            font-size: 11px;
+                                            font-weight: 600;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+
+                            Text {
+                                text: root.connected ? ("Active Audio Sink: " + root.audio_sink) : "Headphone is currently offline or in charging case";
+                                color: Theme.text_muted;
+                                font-size: 12px;
+                            }
+                        }
+                    }
+
+                    // Connection Action Button / Status Badge
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 12px;
+
+                        Rectangle {
+                            border-radius: Theme.radius_pill;
+                            background: root.connected ? #10b98122 : #33415544;
+                            border-width: 1px;
+                            border-color: root.connected ? #10b98166 : #47556966;
+                            height: 28px;
+
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 10px;
+                                spacing: 6px;
+                                alignment: center;
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    Rectangle {
+                                        width: 6px;
+                                        height: 6px;
+                                        border-radius: 3px;
+                                        background: root.connected ? Theme.success : Theme.text_muted;
+                                    }
+                                }
+
+                                Text {
+                                    text: root.connected ? "Connected" : "Offline";
+                                    color: root.connected ? Theme.success : Theme.text_secondary;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        if root.connected : Rectangle {
+                            border-radius: Theme.radius_md;
+                            background: Theme.bg_input;
+                            border-width: 1px;
+                            border-color: Theme.border;
+                            height: 32px;
+
+                            HorizontalLayout {
+                                padding-left: 14px;
+                                padding-right: 14px;
+
+                                Text {
+                                    text: "Disconnect";
+                                    color: Theme.text_secondary;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            TouchArea {
+                                clicked => {
+                                    root.disconnect_clicked();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // BATTERY TELEMETRY SECTION
+        VerticalLayout {
+            spacing: 10px;
+            alignment: start;
+
+            Text {
+                text: "BATTERY TELEMETRY";
+                color: Theme.text_muted;
+                font-size: 11px;
+                font-weight: 700;
+                letter-spacing: 1px;
+            }
+
+            HorizontalLayout {
+                spacing: 14px;
+
+                // Left Bud
+                if root.battery_left >= 0 || root.battery_percent < 0 : BatteryPod {
+                    label: "Left Bud";
+                    pod_type: "left";
+                    percent: root.battery_left;
+                    charging: root.is_charging;
+                    placement: root.in_ear_primary;
+                }
+
+                // Right Bud
+                if root.battery_right >= 0 || root.battery_percent < 0 : BatteryPod {
+                    label: "Right Bud";
+                    pod_type: "right";
+                    percent: root.battery_right;
+                    charging: root.is_charging;
+                    placement: root.in_ear_secondary;
+                }
+
+                // Charging Case
+                if root.battery_case >= 0 || root.battery_percent < 0 : BatteryPod {
+                    label: "Charging Case";
+                    pod_type: "case";
+                    percent: root.battery_case;
+                    charging: root.is_charging;
+                    placement: "";
+                }
+
+                // Over-ear Single Battery
+                if root.battery_percent >= 0 && root.battery_left < 0 && root.battery_right < 0 : BatteryPod {
+                    label: "Headphones Battery";
+                    pod_type: "headphone";
+                    percent: root.battery_percent;
+                    charging: root.is_charging;
+                    placement: root.connected ? "in_ear" : "unknown";
+                }
+            }
+        }
+
+        // NOISE CONTROL (ANC) SECTION
+        VerticalLayout {
+            spacing: 10px;
+            alignment: start;
+
+            Text {
+                text: "ACTIVE NOISE CANCELLATION";
+                color: Theme.text_muted;
+                font-size: 11px;
+                font-weight: 700;
+                letter-spacing: 1px;
+            }
+
+            HorizontalLayout {
+                spacing: 12px;
+
+                AncModeCard {
+                    mode_id: "off";
+                    title: "Off";
+                    description: "Passive seal";
+                    is_active: root.noise_mode == "off";
+                    clicked => { root.set_anc("off"); }
+                }
+
+                AncModeCard {
+                    mode_id: "anc";
+                    title: "Noise Cancelling";
+                    description: "Active attenuation";
+                    is_active: root.noise_mode == "noise_cancellation" || root.noise_mode == "anc" || root.noise_mode == "high";
+                    clicked => { root.set_anc("anc"); }
+                }
+
+                AncModeCard {
+                    mode_id: "ambient";
+                    title: "Transparency";
+                    description: "Passthrough audio";
+                    is_active: root.noise_mode == "transparency" || root.noise_mode == "ambient" || root.noise_mode == "low";
+                    clicked => { root.set_anc("ambient"); }
+                }
+
+                if root.vendor == "Apple" : AncModeCard {
+                    mode_id: "adaptive";
+                    title: "Adaptive Audio";
+                    description: "Dynamic acoustic blend";
+                    is_active: root.noise_mode == "adaptive";
+                    clicked => { root.set_anc("adaptive"); }
+                }
+
+                if root.vendor == "Bowers & Wilkins" : AncModeCard {
+                    mode_id: "wind";
+                    title: "Auto / Wind";
+                    description: "Outdoor wind filter";
+                    is_active: root.noise_mode == "wind" || root.noise_mode == "auto";
+                    clicked => { root.set_anc("auto"); }
+                }
+            }
+        }
+
+        // QUICK SMART CONTROLS
+        VerticalLayout {
+            spacing: 10px;
+            alignment: start;
+
+            Text {
+                text: "SMART FEATURES";
+                color: Theme.text_muted;
+                font-size: 11px;
+                font-weight: 700;
+                letter-spacing: 1px;
+            }
+
+            VerticalLayout {
+                spacing: 10px;
+                alignment: start;
+
+                SettingSwitchRow {
+                    icon_name: "play-pause";
+                    title: "Smart Auto-Pause (MPRIS)";
+                    description: "Automatically pauses media players when you remove an earbud and resumes on re-insert";
+                    checked <=> root.auto_pause;
+                    toggled(val) => { root.set_auto_pause(val); }
+                }
+
+                if root.vendor == "Apple" : SettingSwitchRow {
+                    icon_name: "message";
+                    title: "Conversation Awareness";
+                    description: "Lowers volume and enhances voices in front of you when you speak (AirPods Pro 2)";
+                    checked <=> root.conv_aware;
+                    toggled(val) => { root.set_conv_aware(val); }
+                }
+
+                if root.vendor == "Apple" : SettingSwitchRow {
+                    icon_name: "earbud";
+                    title: "Single-Bud Noise Cancellation";
+                    description: "Enables Active Noise Cancellation even when only wearing a single earbud";
+                    checked <=> root.one_bud_anc;
+                    toggled(val) => { root.set_one_bud_anc(val); }
+                }
+
+                SettingSwitchRow {
+                    icon_name: "sensor";
+                    title: "Hardware Ear Detection";
+                    description: "Enables physical optical and capacitive wear sensors on earbuds";
+                    checked <=> root.ear_detection;
+                    toggled(val) => { root.set_ear_detection(val); }
+                }
+            }
+        }
+    }
+}

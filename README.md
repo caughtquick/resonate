@@ -1,12 +1,13 @@
 # Resonate
 
-Resonate is a native Linux Bluetooth headphone daemon and CLI providing reverse-engineered, vendor-specific controls for supported **Apple / Beats** (AirPods, AirPods Pro, AirPods Max, Beats), **Sony** (WH-1000XM, WF-1000XM, LinkBuds, MDR), and **Bowers & Wilkins** (Px7, Px8, Pi) wireless headphones.
+Resonate is a native Linux Bluetooth headphone daemon and CLI providing reverse-engineered, vendor-specific controls for supported **Apple / Beats** (AirPods, AirPods Pro, AirPods Max, Beats) and **Bowers & Wilkins** (Px7, Px8, Pi) wireless headphones.
 
 It brings first-class desktop integration to Linux:
+- **Resonate Studio GUI** (`resonate-gui`): Full-featured desktop application built with Slint providing real-time battery HUD, tactile ANC switching, interactive B&W parametric EQ curves, hardware personalization, and daemon supervision.
 - **Active Noise Cancellation (ANC)** mode toggling (Off, Noise Cancellation, Transparency, Adaptive, Wind Reduction)
 - **Detailed battery telemetry** (left bud, right bud, charging case, and charging indicators)
 - **Smart auto-pause / auto-resume** via MPRIS when earbuds are removed or re-inserted
-- **Hardware-specific settings** (Conversation Awareness, single-bud ANC, mic routing, chime volume, touch panel controls, DSEE, NC optimizer, standby timers, custom action buttons, and hardware equalizers)
+- **Hardware-specific settings** (Conversation Awareness, single-bud ANC, mic routing, chime volume, standby timers, custom action buttons, and hardware equalizers)
 - **Status bar streaming** (`resonate watch --format waybar`) for Waybar, Polybar, or custom shell scripts
 - **Desktop notifications** via FreeDesktop notifications for low battery alerts and connection status
 
@@ -16,9 +17,16 @@ It brings first-class desktop integration to Linux:
 
 - [Supported Hardware](#supported-hardware)
 - [Architecture & How It Works](#architecture--how-it-works)
+- [Technical Documentation](#technical-documentation)
 - [Prerequisites & Permissions](#prerequisites--permissions)
 - [Installation & Setup](#installation--setup)
 - [CLI Command Reference](#cli-command-reference)
+  - [Status & Introspection](#status--introspection)
+  - [Multipoint Bluetooth Management](#resonate-multipoint)
+  - [Audio & Listening Mode Controls](#audio--listening-mode-controls)
+  - [Hardware Toggles & Settings](#hardware-toggles--settings)
+  - [Shell Completions](#shell-completions)
+- [Resonate Studio (Desktop GUI)](#resonate-studio-desktop-gui)
 - [Status Bar Integration (Waybar & Polybar)](#status-bar-integration-waybar--polybar)
 - [D-Bus API Reference](#d-bus-api-reference)
 - [Configuration Reference](#configuration-reference)
@@ -38,8 +46,6 @@ It brings first-class desktop integration to Linux:
 | **Apple** | AirPods Max (Lightning & USB-C) | ANC / Transparency, Battery percentage, Head detection |
 | **Beats** | Beats Fit Pro, Beats Studio Buds+, Beats Studio Pro | ANC / Transparency, Left/Right/Case battery, Ear detection, Mic selection |
 | **Beats** | Beats Solo 4, Beats Solo Buds | Battery telemetry, Device status |
-| **Sony** | WH-1000XM3, WH-1000XM4, WH-1000XM5 | ANC / Ambient Sound (0-20) / Wind Noise, 5-band EQ + Clear Bass, Touch Sensor toggle, DSEE Extreme, NC Atmospheric Optimizer, Auto-Power Off |
-| **Sony** | WF-1000XM3, WF-1000XM4, WF-1000XM5, LinkBuds | ANC / Ambient Sound, 5-band EQ + Clear Bass, DSEE Extreme, Touch sensor toggles |
 | **Bowers & Wilkins** | Px7 S2, Px7 S2e, Px8, PI7, PI5 | ANC (Off, Auto, Low, High), Bass / Treble tone controls, Wear Sensor, Auto-standby timer, Action button remapping |
 
 ---
@@ -52,7 +58,6 @@ Resonate operates in two tiers:
 flowchart TD
     subgraph Hardware["Bluetooth Devices"]
         AP["Apple AirPods / Beats\n(L2CAP PSM 0x1001)"]
-        SN["Sony WH/WF Series\n(RFCOMM Channel 1)"]
         BW["Bowers & Wilkins\n(BLE GATT Characteristics)"]
     end
 
@@ -60,7 +65,6 @@ flowchart TD
         BZ["BlueZ D-Bus Client\n(Device Inventory & Sinks)"]
         MGR["DeviceManager\n(Session Lifecycle & State Synchronization)"]
         AP_S["AppleL2capSession\n(AAP Frame Protocol)"]
-        SN_S["SonyMdrSession\n(MDR Framing & Checksum)"]
         BW_S["BluezGattClient\n(MessagePack RPC)"]
         AP_CO["AutoPauseCoordinator\n(MPRIS Media Player Integration)"]
         NOTIF["NotificationService\n(org.freedesktop.Notifications)"]
@@ -74,11 +78,9 @@ flowchart TD
     end
 
     AP <--> AP_S
-    SN <--> SN_S
     BW <--> BW_S
     BZ <--> MGR
     AP_S <--> MGR
-    SN_S <--> MGR
     BW_S <--> MGR
     MGR <--> AP_CO
     MGR <--> NOTIF
@@ -97,17 +99,26 @@ flowchart TD
    - Detects when a supported headphone connects or disconnects.
 3. **Vendor Session Establishment**:
    - **Apple**: Connects an asynchronous non-blocking L2CAP socket directly to the device on PSM `0x1001`, sends protocol handshake packets, negotiates feature flags (`0xD7`), subscribes to real-time telemetry, and auto-enables single-bud ANC.
-   - **Sony**: Opens an RFCOMM stream socket on channel 1, completes packet handshake, and maintains alternating sequence bit ACKs.
    - **Bowers & Wilkins**: Locates the vendor GATT characteristics under BlueZ, registers for notifications, and sends MessagePack RPC queries.
 4. **State Signals & Broadcasts**: When telemetry arrives (e.g. battery drain, bud removed from ear, mode button clicked on the headphone), the internal `ResonateState` updates and emits a `StateChanged` D-Bus signal with complete JSON.
 5. **Smart Auto-Pause**: When in-ear detection detects bud removal, `AutoPauseCoordinator` queries MPRIS (`org.mpris.MediaPlayer2.*`), pauses actively playing players, and records their bus names. Re-inserting the earbuds within 10 minutes automatically resumes playback.
 
 ---
 
+## Technical Documentation
+
+For developers, protocol engineers, and advanced integrators, deep-dive specifications are available in the [`docs/`](docs/) directory:
+
+- 📖 **[Reverse-Engineered Protocol Specifications](docs/PROTOCOLS.md)**: Packet layout, opcode catalog, handshake sequences, AAP L2CAP seqpackets, and Bowers & Wilkins MessagePack RPC commands over BLE GATT.
+- 🔌 **[D-Bus API Reference & Client Integration](docs/DBUS_API.md)**: Complete method signatures, properties, signals, introspection XML, and client examples for `busctl`, Python (`pydbus`), and Rust (`zbus`).
+- 🏗️ **[Architecture & Internals](docs/ARCHITECTURE.md)**: Detailed breakdown of the Tokio concurrency model, RAII task cleanup (`AbortOnDrop`), MPRIS media player coordination, and persistence caching.
+
+---
+
 ## Prerequisites & Permissions
 
 - **Linux Kernel & BlueZ**: Linux 5.x+ with BlueZ 5.50+ installed and running (`systemctl status bluetooth`).
-- **Bluetooth Permissions**: Accessing raw Bluetooth sockets (`L2CAP` / `RFCOMM`) requires standard user permissions. On most distributions (Arch, Fedora, Ubuntu, Debian), ensuring your user is part of the `bluetooth` group or having active logind seat sessions is sufficient:
+- **Bluetooth Permissions**: Accessing raw Bluetooth sockets (`L2CAP`) requires standard user permissions. On most distributions (Arch, Fedora, Ubuntu, Debian), ensuring your user is part of the `bluetooth` group or having active logind seat sessions is sufficient:
   ```bash
   sudo usermod -aG bluetooth $USER
   ```
@@ -203,8 +214,6 @@ $ resonate --json status
   "oneBudAnc": true,
   "chimeVolume": 80,
   "standbyMinutes": 0,
-  "touchSensor": false,
-  "dsee": false,
   "equalizerPreset": ""
 }
 ```
@@ -226,8 +235,50 @@ Lists all paired Bluetooth audio devices discovered via BlueZ, their support sta
 $ resonate devices
 Paired Devices:
  * Abhijit's AirPods Pro [6C:12:70:3F:8E:AE] (Apple: AirPods Pro (2nd gen, USB-C)) - Connected
-   WH-1000XM4            [38:18:4C:BE:22:90] (Sony: WH-1000XM4) - Paired
+   Px7 S2e                [00:11:22:33:44:55] (Bowers & Wilkins: Px7 S2e) - Paired
 ```
+
+#### `resonate multipoint [list|connect <target>|disconnect <target>]`
+Inspects and manages hardware multipoint paired devices on Bowers & Wilkins headphones over BLE GATT:
+
+- **List Paired Devices**: Run without arguments or with `list`:
+  ```bash
+  $ resonate multipoint
+  === Multipoint Paired Devices ===
+   - [0] MacBook Pro (EC:66:D1:BE:1D:80) [Connected]
+   - [1] iPhone 15 (30:E3:A4:86:67:F2) [Paired]
+  ```
+
+- **Connect / Switch Active Audio Link**: Trigger device connection by slot index, name substring, or MAC address:
+  ```bash
+  resonate multipoint connect 1
+  resonate multipoint connect "MacBook"
+  resonate multipoint connect "30:E3:A4:86:67:F2"
+  ```
+
+- **Disconnect Audio Link**: Disconnect a secondary or active paired link from the headphones:
+  ```bash
+  resonate multipoint disconnect 0
+  ```
+
+- **JSON Output**: Add `--json` for scripting and automations:
+  ```bash
+  $ resonate --json multipoint
+  [
+    {
+      "id": 0,
+      "name": "MacBook Pro",
+      "address": "EC:66:D1:BE:1D:80",
+      "connected": true
+    },
+    {
+      "id": 1,
+      "name": "iPhone 15",
+      "address": "30:E3:A4:86:67:F2",
+      "connected": false
+    }
+  ]
+  ```
 
 #### `resonate connect [target]` & `resonate disconnect`
 Connects to or disconnects from a supported headphone by address or name substring:
@@ -256,29 +307,27 @@ resonate anc adaptive
 resonate anc off
 ```
 
-#### `resonate ambient-level [0-20]` (Sony)
-Adjusts the ambient transparency level on Sony WH/WF headphones:
-```bash
-resonate ambient-level 12
-```
-
 #### `resonate eq [args...]`
-Configures equalizers:
-- **Sony**: Pass a preset name (`off`, `bright`, `excited`, `mellow`, `relaxed`, `vocal`, `treble_boost`, `bass_boost`, `speech`, `manual`, `custom1`, `custom2`) or 6 integer band gains:
+Gets or sets tone controls or equalizers on Bowers & Wilkins headphones:
+
+- **Query Current Settings**: Run without arguments to inspect active equalizer configuration:
   ```bash
-  resonate eq excited
-  resonate eq 0 2 4 2 0 3    # 400Hz, 1kHz, 2.5kHz, 6.3kHz, 16kHz, Clear Bass
-  ```
-- **Bowers & Wilkins**: Pass bass and treble decibel offsets (-6 to +6 dB):
-  ```bash
-  resonate eq 3 -1           # Bass: +3 dB, Treble: -1 dB
+  $ resonate eq
+  Current equalizer: Bass: +2 dB, Treble: -1 dB
   ```
 
-#### `resonate optimize [start|stop|status]` (Sony)
-Controls NC optimizer and barometric pressure calibration:
-```bash
-resonate optimize start
-```
+- **Tone Controls** (Px7 S2, Px7 S2e, Px8): Adjust bass and treble gains in decibels (-6 to +6 dB, with 0.1 dB precision):
+  ```bash
+  resonate eq 3 -1              # Bass: +3 dB, Treble: -1 dB
+  resonate eq bass 2 treble -1  # Explicit keywords
+  resonate eq +1.5 -0.5         # Tenth-decibel precision
+  resonate eq flat              # Reset tone controls to 0 dB
+  ```
+
+- **5-Band Parametric Equalizer** (Px7 S3): Pass 5 gain values in decibels:
+  ```bash
+  resonate eq 0 1 2 1 0         # Bands 1-5 gains in dB
+  ```
 
 ---
 
@@ -287,8 +336,30 @@ resonate optimize start
 #### `resonate auto-pause [on|off]`
 Toggles Resonate's smart auto-pause and auto-resume behavior when earbuds are taken out or replaced.
 
-#### `resonate wear-sensor [on|off]`
-Enables or disables hardware in-ear wear sensors (Apple, B&W).
+#### `resonate wear-sensor [action]`
+Inspects or configures hardware in-ear and over-ear wear detection (Apple, B&W):
+
+- **Inspect Current Status**: Run without arguments to inspect hardware toggle state, real-time placement, and wear sensitivity:
+  ```bash
+  $ resonate wear-sensor
+  === Wear Sensor Status ===
+  Wear Detection: Enabled
+  Currently Worn: Yes
+  Sensitivity:    Normal / Medium
+  ```
+
+- **Toggle Detection**: Turn hardware wear sensing on or off:
+  ```bash
+  resonate wear-sensor on
+  resonate wear-sensor off
+  ```
+
+- **Configure Sensitivity** (B&W): Tune wear sensor threshold (`low`, `medium` / `normal`, `high`):
+  ```bash
+  resonate wear-sensor low
+  resonate wear-sensor medium
+  resonate wear-sensor high
+  ```
 
 #### `resonate conv-aware [on|off]`
 Enables or disables Conversation Awareness on AirPods Pro 2 / AirPods 4 ANC.
@@ -302,13 +373,7 @@ Allows active noise cancellation to remain active even when only one earbud is w
 #### `resonate chime [0-100]`
 Sets the volume of the charging case speaker and bud alert tones (AirPods Pro 2).
 
-#### `resonate touch [on|off]` (Sony)
-Enables or disables the touch control sensor panel on the side of Sony headphones.
-
-#### `resonate dsee [on|off]` (Sony)
-Enables or disables Sony DSEE Extreme audio upscaling.
-
-#### `resonate standby [minutes]` (Sony, B&W)
+#### `resonate standby [minutes]` (B&W)
 Sets the auto-power off / sleep timer.
 
 #### `resonate button [anc|voice]` (B&W)
@@ -333,15 +398,61 @@ resonate completion fish > ~/.config/fish/completions/resonate.fish
 
 ---
 
-## Status Bar Integration (Waybar & Polybar)
+## Resonate Studio (Desktop GUI)
 
-Resonate provides continuous JSON event streaming optimized for status bar widgets:
+Resonate includes **Resonate Studio** (`resonate-gui`), a dedicated, hardware-accelerated desktop application built with [Slint](https://slint.dev/) designed for complete headphone management on modern Linux desktops (Wayland, Niri, GNOME, KDE, Sway).
 
 ```bash
-resonate watch --format waybar
+# Launch Resonate Studio
+resonate-gui
 ```
 
-### Output Format
+### Studio Features
+
+1. **Active Device Dashboard**:
+   - Hero hardware card with model recognition and live connection state.
+   - 3-point battery HUD (Left earbud, Right earbud, Case) with charging animations (`⚡`) and placement status (`In Ear`, `In Case`, `Out of Ear`).
+   - Tactile segmented Listening Mode selector (**Off**, **Noise Cancellation**, **Transparency**, **Adaptive Audio**, **Wind Reduction**).
+   - Quick toggles for Smart Auto-Pause, Conversation Awareness, and Single-Bud ANC.
+
+2. **Acoustic & EQ Studio (Bowers & Wilkins)**:
+   - Interactive Bass and Treble sliders (`-6.0 dB` to `+6.0 dB`).
+   - Real-time parametric frequency response curve visualizer.
+   - Factory presets (*Flat / Reset*, *Bass Boost*, *Vocal*, *Treble Boost*).
+
+3. **Hardware Personalization**:
+   - Microphone earbud routing selector (*Automatic*, *Always Left*, *Always Right*).
+   - Alert chime volume slider (`0%` to `100%`) for AirPods Pro 2 case speaker and buds.
+   - Auto-standby sleep timer (*Never*, *10m*, *15m*, *30m*).
+   - Physical quick-action button remapping (*Listening Modes* vs *Voice Assistant*).
+
+4. **Devices & Multipoint Matrix**:
+   - Paired Bluetooth headphones inventory with 1-click connect/disconnect.
+   - Multi-device audio handoff matrix for Bowers & Wilkins multipoint devices.
+
+5. **Daemon Supervisor & Real-Time Diagnostics**:
+   - Background systemd user service status (`Active (Running)`, `Inactive`, `Failed`).
+   - 1-click `Start Daemon`, `Stop Daemon`, and `Restart Daemon` controls.
+   - Real-time scrolling telemetry event stream monitoring `StateChanged` D-Bus signals.
+
+---
+
+## Status Bar Integration (Waybar & Polybar)
+
+Resonate provides continuous event streaming via `resonate watch` designed for status bar widgets, desktop panels, and custom scripts:
+
+```bash
+# Waybar format (JSON stream with class, alt, tooltip, percentage)
+resonate watch --format waybar
+
+# Compact format (Plain text one-liner for Polybar, i3blocks, tmux)
+resonate watch --format compact
+
+# Raw format (Full JSON telemetry payload per event)
+resonate watch --format json
+```
+
+### 1. Waybar Output Format (`--format waybar`)
 
 ```json
 {
@@ -353,10 +464,8 @@ resonate watch --format waybar
 }
 ```
 
-### Waybar Configuration Example
-
+#### Waybar Configuration
 In `~/.config/waybar/config`:
-
 ```json
 "custom/resonate": {
     "format": " {icon} {}",
@@ -373,7 +482,6 @@ In `~/.config/waybar/config`:
 ```
 
 In `~/.config/waybar/style.css`:
-
 ```css
 #custom-resonate {
     padding: 0 10px;
@@ -387,6 +495,32 @@ In `~/.config/waybar/style.css`:
 #custom-resonate.disconnected {
     color: #6c7086;
 }
+```
+
+### 2. Polybar Configuration (`--format compact`)
+
+In `~/.config/polybar/config.ini`:
+```ini
+[module/resonate]
+type = custom/script
+exec = resonate watch --format compact
+tail = true
+format = <label>
+label = %output%
+format-foreground = #89b4fa
+click-left = resonate anc anc || resonate anc transparency
+click-right = resonate anc off
+click-middle = resonate disconnect
+```
+
+When connected: `🎧 85% • ANC`
+When disconnected: `🎧 Disconnected`
+
+### 3. Tmux Status Bar Integration
+
+In `~/.tmux.conf`:
+```tmux
+set -g status-right '#(resonate --json status | jq -r "if .connected then \"🎧 \(.batteryPercent)% [\(.noiseMode)]\" else \"\" end") %H:%M'
 ```
 
 ---
@@ -405,39 +539,54 @@ Resonate exposes its interface over session D-Bus:
 | :--- | :--- | :--- |
 | `GetStatus` | `() -> (s)` | Returns complete state formatted as JSON string |
 | `ListDevices` | `() -> (s)` | Returns paired devices list as JSON string |
+| `GetMultipoint` | `() -> (b, s)` | Queries multipoint paired devices list from active B&W headphone |
+| `ConnectMultipoint` | `(s target) -> (b, s)` | Connects paired multipoint device by slot index, MAC, or name |
+| `DisconnectMultipoint` | `(s target) -> (b, s)` | Disconnects paired multipoint device by slot index, MAC, or name |
 | `Connect` | `(s target) -> (b, s)` | Connects to device by name or MAC address |
 | `Disconnect` | `() -> (b)` | Disconnects the active session |
 | `SetAnc` | `(s mode) -> (b, s)` | Sets ANC mode (`"off"`, `"anc"`, `"ambient"`, `"adaptive"`, `"wind"`) |
-| `SetAmbientLevel` | `(i level) -> (b)` | Sets Sony ambient transparency level (0-20) |
-| `SetEqualizer` | `(s args) -> (b, s)` | Configures EQ preset or frequency band string |
+| `SetEqualizer` | `(s args) -> (b, s)` | Configures EQ preset or tone controls string |
 | `SetWearSensor` | `(b enable) -> (b)` | Enables or disables hardware wear detection |
+| `SetWearSensorString` | `(s action) -> (b, s)` | Sets wear sensor toggle or sensitivity (`"on"`, `"off"`, `"low"`, `"medium"`, `"high"`) |
 | `SetAutoPause` | `(b enable) -> (b)` | Enables or disables software smart auto-pause |
 | `GetAutoPause` | `() -> (b)` | Queries smart auto-pause setting |
 | `SetConversationAwareness` | `(b enable) -> (b)` | Toggles Conversation Awareness |
 | `SetMicrophoneMode` | `(s mode) -> (b)` | Configures mic routing (`"auto"`, `"left"`, `"right"`) |
 | `SetOneBudAnc` | `(b enable) -> (b)` | Toggles single-bud ANC permission |
 | `SetChimeVolume` | `(y vol) -> (b)` | Sets chime volume (0-100) |
-| `SetTouchSensor` | `(b enable) -> (b)` | Enables or disables Sony touch panel |
-| `SetDsee` | `(b enable) -> (b)` | Enables or disables Sony DSEE upscaling |
 | `SetStandby` | `(s val) -> (b)` | Sets auto-power off timer |
 | `SetActionButton` | `(s action) -> (b, s)` | Remaps B&W action button (`"anc"`, `"voice"`) |
-| `Optimize` | `(s action) -> (b, s)` | Controls Sony atmospheric pressure optimizer |
 
 ### Properties
 
 | Property | Type | Description |
 | :--- | :--- | :--- |
 | `Connected` | `bool` | True if a supported session is communicating |
+| `ConnectionState` | `string` | Connection status (`"connected"`, `"connecting"`, `"idle"`) |
 | `DeviceName` | `string` | Friendly product name |
-| `Vendor` | `string` | `"Apple"`, `"Sony"`, `"Bowers & Wilkins"`, or `"Unknown"` |
+| `Vendor` | `string` | `"Apple"`, `"Bowers & Wilkins"`, or `"Unknown"` |
 | `BatteryPercent` | `int32` | Overall or primary battery percentage (-1 if unknown) |
 | `BatteryLeft` | `int32` | Left earbud battery percentage |
 | `BatteryRight` | `int32` | Right earbud battery percentage |
 | `BatteryCase` | `int32` | Charging case battery percentage |
 | `IsCharging` | `bool` | True if any component is actively charging |
 | `NoiseMode` | `string` | Active listening mode (`"noise_cancellation"`, `"transparency"`, etc.) |
+| `EarDetection` | `bool` | Hardware wear sensor toggle |
+| `AutoPause` | `bool` | MPRIS smart auto-pause toggle |
 | `InEar` | `bool` | True if earbuds are inserted in ears |
+| `InEarPrimary` | `string` | Primary bud wear state (`"in_ear"`, `"out_of_ear"`, `"in_case"`) |
+| `InEarSecondary` | `string` | Secondary bud wear state (`"in_ear"`, `"out_of_ear"`, `"in_case"`) |
+| `ConversationAwareness` | `bool` | True if Conversation Awareness is active |
+| `MicrophoneMode` | `string` | Active microphone routing (`"auto"`, `"left"`, `"right"`) |
+| `OneBudAnc` | `bool` | True if single-bud ANC is permitted |
+| `ChimeVolume` | `int32` | Chime volume level (0-100) |
+| `StandbyMinutes` | `int32` | Sleep timeout in minutes (0 = disabled) |
+| `EqualizerPreset` | `string` | Current equalizer preset or tone controls string |
 | `AudioSink` | `string` | Current PipeWire / PulseAudio sink name |
+| `WearSensitivity` | `int32` | B&W wear sensor sensitivity (0 = Low, 1 = Normal/Medium, 2 = High, -1 if unavailable) |
+
+> [!TIP]
+> For complete D-Bus introspection XML, type signatures, and client integration scripts in Python and Rust, consult **[`docs/DBUS_API.md`](docs/DBUS_API.md)**.
 
 ### Signals
 
@@ -542,5 +691,5 @@ Resonate is distributed under the [MIT License](LICENSE).
 
 ### Attribution
 
-Resonate is derived from and inspired by [HeadBridge](https://github.com/herenickname/HeadBridge) (Copyright &copy; 2026 HeadBridge contributors), adapting its Bluetooth headphone protocol research and reverse engineering (especially for Bowers & Wilkins BLE RPC and Sony MDR protocols, along with maintaining D-Bus interface compatibility under `org.headbridge`) for native Linux environments.
+Resonate is derived from and inspired by [HeadBridge](https://github.com/herenickname/HeadBridge) (Copyright &copy; 2026 HeadBridge contributors), adapting its Bluetooth headphone protocol research and reverse engineering (especially for Bowers & Wilkins BLE RPC protocol, along with maintaining D-Bus interface compatibility under `org.headbridge`) for native Linux environments.
 

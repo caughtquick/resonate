@@ -137,47 +137,32 @@ impl MprisController {
 
     /// Resumes the players that were previously paused by smart auto-pause.
     pub async fn resume_players(conn: &Connection, player_bus_names: &[String]) -> usize {
-        if player_bus_names.is_empty() {
+        let mut resumed = 0;
+        for player in player_bus_names {
+            if Self::play_player(conn, player).await {
+                resumed += 1;
+            }
+        }
+
+        if resumed == 0 && player_bus_names.is_empty() {
             // Fallback to playerctl play
             let res = Command::new("playerctl").arg("play").output().await;
             return if res.is_ok() { 1 } else { 0 };
         }
 
-        let mut resumed = 0;
-        for player in player_bus_names {
-            if let Ok(proxy) = zbus::Proxy::new(
-                conn,
-                player.as_str(),
-                "/org/mpris/MediaPlayer2",
-                "org.mpris.MediaPlayer2.Player",
-            )
-            .await
-            {
-                let _: Result<(), _> = proxy.call("Play", &()).await;
-                if let Some(status) = Self::get_playback_status(conn, player).await {
-                    if !status.eq_ignore_ascii_case("Playing")
-                        && Self::play_player(conn, player).await
-                    {
-                        resumed += 1;
-                    }
-                } else if Self::play_player(conn, player).await {
-                    resumed += 1;
-                }
-            }
-        }
         resumed
     }
 }
 
 /// Action decision returned by the state machine evaluator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AutoPauseAction {
     /// No action required.
     None,
     /// Pause active media playback.
     Pause,
     /// Resume media playback on previously paused players.
-    Resume,
+    Resume(Vec<String>),
 }
 
 /// State coordinator for smart auto-pause and auto-resume transitions.
@@ -192,6 +177,10 @@ pub struct AutoPauseCoordinator {
     pub paused_at: Option<Instant>,
     /// Maximum elapsed duration allowed for auto-resuming playback (10 minutes).
     pub max_resume_delay: Duration,
+    /// Debounce duration to avoid flapping on momentary sensor disconnects during movement/swallowing.
+    pub debounce_delay: Duration,
+    /// Generation counter used to invalidate debounced pause tasks when state changes.
+    pub pause_generation: u64,
 }
 
 impl AutoPauseCoordinator {
@@ -203,6 +192,8 @@ impl AutoPauseCoordinator {
             paused_players: Vec::new(),
             paused_at: None,
             max_resume_delay: Duration::from_secs(600), // 10 minutes
+            debounce_delay: Duration::from_millis(400),
+            pause_generation: 0,
         }
     }
 
@@ -212,6 +203,7 @@ impl AutoPauseCoordinator {
         if !enabled {
             self.paused_players.clear();
             self.paused_at = None;
+            self.pause_generation = self.pause_generation.wrapping_add(1);
         }
     }
 
@@ -220,6 +212,7 @@ impl AutoPauseCoordinator {
         self.prev_in_ear_count = None;
         self.paused_players.clear();
         self.paused_at = None;
+        self.pause_generation = self.pause_generation.wrapping_add(1);
     }
 
     /// Returns a slice of the bus names currently paused by the coordinator.
@@ -249,54 +242,88 @@ impl AutoPauseCoordinator {
 
         let mut action = AutoPauseAction::None;
 
+        if both_in_case {
+            self.pause_generation = self.pause_generation.wrapping_add(1);
+            self.paused_players.clear();
+            self.paused_at = None;
+            self.prev_in_ear_count = Some(current_count);
+            return AutoPauseAction::Pause;
+        }
+
         if current_count < prev {
-            // Earbud removed!
-            action = AutoPauseAction::Pause;
+            // Earbud removed! Invalidate previous generation to start a fresh debounce cycle
+            self.pause_generation = self.pause_generation.wrapping_add(1);
+            if self.paused_players.is_empty() {
+                action = AutoPauseAction::Pause;
+            }
         } else if current_count > prev {
-            // Earbud inserted / returned!
+            // Earbud inserted / returned! Invalidate pending debounce pause
+            self.pause_generation = self.pause_generation.wrapping_add(1);
             if !self.paused_players.is_empty() {
                 let can_resume = self
                     .paused_at
                     .is_some_and(|t| t.elapsed() <= self.max_resume_delay);
-                if can_resume {
-                    action = AutoPauseAction::Resume;
-                }
-                self.paused_players.clear();
+                let players = std::mem::take(&mut self.paused_players);
                 self.paused_at = None;
+                if can_resume {
+                    action = AutoPauseAction::Resume(players);
+                }
             }
-        }
-
-        if both_in_case {
-            self.paused_players.clear();
-            self.paused_at = None;
         }
 
         self.prev_in_ear_count = Some(current_count);
         action
     }
 
-    /// Handles an in-ear status telemetry update from earbuds.
-    pub async fn on_ear_status_update(&mut self, in_ear: InEarStatus, conn: &Connection) {
+    /// Handles an in-ear status telemetry update from earbuds with debounce protection against sensor flutter.
+    pub async fn on_ear_status_update(
+        coord_mutex: std::sync::Arc<tokio::sync::Mutex<Self>>,
+        in_ear: InEarStatus,
+        conn: &Connection,
+    ) {
         let current_count = in_ear.in_ear_count();
         let both_in_case = in_ear.are_both_in_case();
 
-        let action = self.evaluate_ear_transition(current_count, both_in_case);
+        let (action, generation, debounce) = {
+            let mut coord = coord_mutex.lock().await;
+            let action = coord.evaluate_ear_transition(current_count, both_in_case);
+            let generation = coord.pause_generation;
+            let debounce = coord.debounce_delay;
+            (action, generation, debounce)
+        };
 
         match action {
             AutoPauseAction::Pause => {
-                let paused = MprisController::pause_all_playing(conn).await;
-                if !paused.is_empty() {
-                    println!(
-                        "Smart Auto-Pause: Earbud removal detected. Paused media on: {:?}",
-                        paused
-                    );
-                    self.paused_players = paused;
-                    self.paused_at = Some(Instant::now());
+                if both_in_case {
+                    let paused = MprisController::pause_all_playing(conn).await;
+                    if !paused.is_empty() {
+                        println!(
+                            "Smart Auto-Pause: Earbuds placed in case. Paused media on: {:?}",
+                            paused
+                        );
+                    }
+                } else {
+                    let coord_clone = coord_mutex.clone();
+                    let conn_clone = conn.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(debounce).await;
+                        let mut coord = coord_clone.lock().await;
+                        if coord.pause_generation == generation && coord.paused_players.is_empty() {
+                            let paused = MprisController::pause_all_playing(&conn_clone).await;
+                            if !paused.is_empty() {
+                                println!(
+                                    "Smart Auto-Pause: Earbud removal detected. Paused media on: {:?}",
+                                    paused
+                                );
+                                coord.paused_players = paused;
+                                coord.paused_at = Some(Instant::now());
+                            }
+                        }
+                    });
                 }
             }
-            AutoPauseAction::Resume => {
-                let count_resumed =
-                    MprisController::resume_players(conn, &self.paused_players).await;
+            AutoPauseAction::Resume(players) => {
+                let count_resumed = MprisController::resume_players(conn, &players).await;
                 println!(
                     "Smart Auto-Pause: Earbud re-inserted. Resumed {} player(s)",
                     count_resumed
@@ -307,25 +334,42 @@ impl AutoPauseCoordinator {
     }
 
     /// Handles wear sensor toggle/status update (for single wear sensors, over-ear headphones, B&W).
-    pub async fn on_wear_sensor_update(&mut self, is_worn: bool, conn: &Connection) {
+    pub async fn on_wear_sensor_update(
+        coord_mutex: std::sync::Arc<tokio::sync::Mutex<Self>>,
+        is_worn: bool,
+        conn: &Connection,
+    ) {
         let current_count = if is_worn { 1 } else { 0 };
-        let action = self.evaluate_ear_transition(current_count, false);
+        let (action, generation, debounce) = {
+            let mut coord = coord_mutex.lock().await;
+            let action = coord.evaluate_ear_transition(current_count, false);
+            let generation = coord.pause_generation;
+            let debounce = coord.debounce_delay;
+            (action, generation, debounce)
+        };
 
         match action {
             AutoPauseAction::Pause => {
-                let paused = MprisController::pause_all_playing(conn).await;
-                if !paused.is_empty() {
-                    println!(
-                        "Smart Auto-Pause: Headphone removed. Paused media on: {:?}",
-                        paused
-                    );
-                    self.paused_players = paused;
-                    self.paused_at = Some(Instant::now());
-                }
+                let coord_clone = coord_mutex.clone();
+                let conn_clone = conn.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(debounce).await;
+                    let mut coord = coord_clone.lock().await;
+                    if coord.pause_generation == generation && coord.paused_players.is_empty() {
+                        let paused = MprisController::pause_all_playing(&conn_clone).await;
+                        if !paused.is_empty() {
+                            println!(
+                                "Smart Auto-Pause: Headphone removed. Paused media on: {:?}",
+                                paused
+                            );
+                            coord.paused_players = paused;
+                            coord.paused_at = Some(Instant::now());
+                        }
+                    }
+                });
             }
-            AutoPauseAction::Resume => {
-                let count_resumed =
-                    MprisController::resume_players(conn, &self.paused_players).await;
+            AutoPauseAction::Resume(players) => {
+                let count_resumed = MprisController::resume_players(conn, &players).await;
                 println!(
                     "Smart Auto-Pause: Headphone put back on. Resumed {} player(s)",
                     count_resumed
@@ -384,7 +428,10 @@ mod tests {
 
         // Earbud returned: transition 1 -> 2
         let a3 = coord.evaluate_ear_transition(2, false);
-        assert_eq!(a3, AutoPauseAction::Resume);
+        assert_eq!(
+            a3,
+            AutoPauseAction::Resume(vec!["org.mpris.MediaPlayer2.spotify".to_string()])
+        );
         assert!(coord.paused_players.is_empty());
         assert!(coord.paused_at.is_none());
     }
@@ -407,7 +454,10 @@ mod tests {
 
         // Put it back in: 0 -> 1
         let a3 = coord.evaluate_ear_transition(1, false);
-        assert_eq!(a3, AutoPauseAction::Resume);
+        assert_eq!(
+            a3,
+            AutoPauseAction::Resume(vec!["org.mpris.MediaPlayer2.vlc".to_string()])
+        );
     }
 
     #[test]
@@ -478,5 +528,26 @@ mod tests {
         };
         assert_eq!(in_case.in_ear_count(), 0);
         assert!(in_case.are_both_in_case());
+    }
+
+    #[test]
+    fn test_auto_pause_debounce_cancels_pause_on_reinsert() {
+        let mut coord = AutoPauseCoordinator::new(true);
+
+        // Baseline: both earbuds in ear (count = 2)
+        coord.evaluate_ear_transition(2, false);
+        let gen0 = coord.pause_generation;
+
+        // Earbud shifts / micro-drops (2 -> 1)
+        let a1 = coord.evaluate_ear_transition(1, false);
+        assert_eq!(a1, AutoPauseAction::Pause);
+        let gen1 = coord.pause_generation;
+        assert_ne!(gen0, gen1);
+
+        // Within debounce window, earbud makes contact again (1 -> 2)
+        let a2 = coord.evaluate_ear_transition(2, false);
+        assert_eq!(a2, AutoPauseAction::None);
+        let gen2 = coord.pause_generation;
+        assert_ne!(gen1, gen2);
     }
 }

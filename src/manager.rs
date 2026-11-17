@@ -1,7 +1,7 @@
 //! Central device management, background monitoring loop, and vendor session lifecycle.
 //!
 //! Orchestrates Bluetooth connections, vendor-specific control channels (Apple L2CAP,
-//! Sony RFCOMM, B&W GATT), smart auto-pause transitions, persistent settings updates,
+//! B&W GATT), smart auto-pause transitions, persistent settings updates,
 //! and periodic telemetry health checks.
 
 use std::sync::Arc;
@@ -17,12 +17,13 @@ use crate::protocols::aap::{
     self, BatteryKind, BatteryStatus, Frame, ListeningMode, MicSelection, Opcode, SettingId,
     SettingNotice,
 };
-use crate::protocols::bw::{BWRPC, BWRPCatalog};
-use crate::protocols::sony::{SonyMDRPacket, SonyV1AutomaticPowerOff, SonyV1EqualizerPreset};
+use crate::protocols::bw::{
+    BWRPC, BWRPCatalog, BWRPCMessageKind, BwAncWireProfile, BwPairedDevice, decode_paired_device,
+    format_bw_5band, format_bw_tone, parse_bw_level, parse_bw_paired_count,
+};
 use crate::settings::SettingsStore;
 use crate::transport::bluez::BluezGattClient;
 use crate::transport::l2cap::AppleL2capSession;
-use crate::transport::rfcomm::SonyMdrSession;
 
 /// Formats the current [`ResonateState`] as pretty-printed JSON.
 pub fn format_state_json(s: &ResonateState) -> String {
@@ -43,13 +44,12 @@ pub fn format_state_json(s: &ResonateState) -> String {
         "inEar": s.in_ear,
         "inEarPrimary": s.in_ear_primary,
         "inEarSecondary": s.in_ear_secondary,
+        "wearSensitivity": if s.wear_sensitivity >= 0 { serde_json::Value::from(s.wear_sensitivity) } else { serde_json::Value::Null },
         "conversationAwareness": s.conv_aware,
         "micMode": s.mic_mode,
         "oneBudAnc": s.one_bud_anc,
         "chimeVolume": s.chime_volume,
         "standbyMinutes": s.standby_minutes,
-        "touchSensor": s.touch_sensor,
-        "dsee": s.dsee,
         "equalizerPreset": s.equalizer_preset,
     })).unwrap_or_else(|_| "{}".to_string())
 }
@@ -59,8 +59,16 @@ pub struct DeviceManager {
     /// Shared runtime state containing current battery, listening mode, and wear status.
     pub state: Arc<RwLock<ResonateState>>,
     active_apple_session: Arc<Mutex<Option<AppleL2capSession>>>,
-    active_sony_session: Arc<Mutex<Option<SonyMdrSession>>>,
     active_bw_client: Arc<Mutex<Option<BluezGattClient>>>,
+    bw_anc_profile: Arc<RwLock<BwAncWireProfile>>,
+    bw_bass: Arc<RwLock<Option<i32>>>,
+    bw_treble: Arc<RwLock<Option<i32>>>,
+    bw_eq_5band: Arc<RwLock<Option<Vec<i32>>>>,
+    bw_supports_5band: Arc<RwLock<bool>>,
+    bw_supports_tone: Arc<RwLock<bool>>,
+    bw_paired_devices: Arc<RwLock<Vec<BwPairedDevice>>>,
+    bw_wear_sensitivity: Arc<RwLock<Option<u8>>>,
+    last_reconnect_attempt: Arc<Mutex<Option<(String, std::time::Instant)>>>,
     active_address: Arc<RwLock<Option<String>>>,
     /// Tokio runtime handle for spawning background tasks from synchronous contexts.
     pub handle: tokio::runtime::Handle,
@@ -82,8 +90,16 @@ impl DeviceManager {
         Self {
             state,
             active_apple_session: Arc::new(Mutex::new(None)),
-            active_sony_session: Arc::new(Mutex::new(None)),
             active_bw_client: Arc::new(Mutex::new(None)),
+            bw_anc_profile: Arc::new(RwLock::new(BwAncWireProfile::Standard)),
+            bw_bass: Arc::new(RwLock::new(None)),
+            bw_treble: Arc::new(RwLock::new(None)),
+            bw_eq_5band: Arc::new(RwLock::new(None)),
+            bw_supports_5band: Arc::new(RwLock::new(false)),
+            bw_supports_tone: Arc::new(RwLock::new(false)),
+            bw_paired_devices: Arc::new(RwLock::new(Vec::new())),
+            bw_wear_sensitivity: Arc::new(RwLock::new(None)),
+            last_reconnect_attempt: Arc::new(Mutex::new(None)),
             active_address: Arc::new(RwLock::new(None)),
             handle,
             settings: Arc::new(Mutex::new(store)),
@@ -93,6 +109,7 @@ impl DeviceManager {
         }
     }
 
+    /// Enables or disables smart auto-pause and auto-resume behavior via MPRIS when earbuds are removed or inserted.
     pub async fn set_auto_pause(&self, enabled: bool) -> bool {
         self.auto_pause.lock().await.set_enabled(enabled);
         self.settings.lock().await.set_auto_pause(enabled);
@@ -101,10 +118,12 @@ impl DeviceManager {
         true
     }
 
+    /// Stores the active session D-Bus connection for broadcasting `StateChanged` signals.
     pub async fn set_dbus_connection(&self, conn: Connection) {
         *self.dbus_conn.lock().await = Some(conn);
     }
 
+    /// Emits the `StateChanged(s)` D-Bus signal containing complete JSON status telemetry.
     pub async fn notify_state_changed(&self) {
         let json = self.get_status_json().await;
         if let Some(conn) = self.dbus_conn.lock().await.as_ref() {
@@ -120,11 +139,13 @@ impl DeviceManager {
         }
     }
 
+    /// Returns the current runtime state serialized as pretty-printed JSON.
     pub async fn get_status_json(&self) -> String {
         let s = self.state.read().await;
         format_state_json(&s)
     }
 
+    /// Fetches all paired Bluetooth audio devices from BlueZ and serializes the list as pretty-printed JSON.
     pub async fn list_devices_json(&self) -> String {
         match BluetoothInventory::fetch_paired_devices().await {
             Ok(devices) => {
@@ -137,6 +158,157 @@ impl DeviceManager {
         }
     }
 
+    /// Queries the multipoint paired device list from the active Bowers & Wilkins headphone over BLE GATT.
+    ///
+    /// Returns `(true, json)` with the device list on success, or `(false, error_message)` on failure.
+    pub async fn get_multipoint(&self) -> (bool, String) {
+        let bw_client = self.active_bw_client.lock().await.clone();
+        if let Some(client) = bw_client {
+            if self.bw_paired_devices.read().await.is_empty() {
+                let _ = client
+                    .send_command::<()>(BWRPCatalog::PAIRED_DEVICE_COUNT_GET, None)
+                    .await;
+                for _ in 0..10 {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    if !self.bw_paired_devices.read().await.is_empty() {
+                        break;
+                    }
+                }
+            } else {
+                let _ = client
+                    .send_command::<()>(BWRPCatalog::PAIRED_DEVICE_COUNT_GET, None)
+                    .await;
+            }
+            let list = self.bw_paired_devices.read().await.clone();
+            match serde_json::to_string(&list) {
+                Ok(json) => (true, json),
+                Err(e) => (
+                    false,
+                    format!("Failed to serialize multipoint devices: {}", e),
+                ),
+            }
+        } else {
+            (
+                false,
+                "No active device supporting multipoint is connected".to_string(),
+            )
+        }
+    }
+
+    /// Requests the active Bowers & Wilkins headphone to connect to a paired multipoint device by index, name, or MAC address.
+    pub async fn connect_multipoint(&self, target: &str) -> (bool, String) {
+        let bw_client = self.active_bw_client.lock().await.clone();
+        let Some(client) = bw_client else {
+            return (
+                false,
+                "No Bowers & Wilkins headphone actively connected.".to_string(),
+            );
+        };
+
+        let target_trim = target.trim();
+        if target_trim.is_empty() {
+            return (
+                false,
+                "Target device (index, name, or MAC address) must be specified.".to_string(),
+            );
+        }
+
+        let devices = self.bw_paired_devices.read().await.clone();
+        let matched = devices.iter().find(|d| {
+            d.id.to_string() == target_trim
+                || d.address.eq_ignore_ascii_case(target_trim)
+                || d.name.to_lowercase().contains(&target_trim.to_lowercase())
+        });
+
+        let Some(dev) = matched else {
+            return (
+                false,
+                format!(
+                    "Device '{}' not found in paired multipoint list. Run 'resonate multipoint' to view devices.",
+                    target_trim
+                ),
+            );
+        };
+
+        if let Err(e) = client.connect_paired_device(dev.id as u8).await {
+            return (
+                false,
+                format!("Failed to send connect command for {}: {}", dev.name, e),
+            );
+        }
+
+        let _ = client
+            .send_command::<()>(BWRPCatalog::PAIRED_DEVICE_COUNT_GET, None)
+            .await;
+
+        (
+            true,
+            format!(
+                "Requested connection to multipoint device [{}]: {} ({})",
+                dev.id, dev.name, dev.address
+            ),
+        )
+    }
+
+    /// Requests the active Bowers & Wilkins headphone to disconnect from a paired multipoint device by index, name, or MAC address.
+    pub async fn disconnect_multipoint(&self, target: &str) -> (bool, String) {
+        let bw_client = self.active_bw_client.lock().await.clone();
+        let Some(client) = bw_client else {
+            return (
+                false,
+                "No Bowers & Wilkins headphone actively connected.".to_string(),
+            );
+        };
+
+        let target_trim = target.trim();
+        if target_trim.is_empty() {
+            return (
+                false,
+                "Target device (index, name, or MAC address) must be specified.".to_string(),
+            );
+        }
+
+        let devices = self.bw_paired_devices.read().await.clone();
+        let matched = devices.iter().find(|d| {
+            d.id.to_string() == target_trim
+                || d.address.eq_ignore_ascii_case(target_trim)
+                || d.name.to_lowercase().contains(&target_trim.to_lowercase())
+        });
+
+        let Some(dev) = matched else {
+            return (
+                false,
+                format!(
+                    "Device '{}' not found in paired multipoint list. Run 'resonate multipoint' to view devices.",
+                    target_trim
+                ),
+            );
+        };
+
+        if let Err(e) = client.disconnect_paired_device(dev.id as u8).await {
+            return (
+                false,
+                format!("Failed to send disconnect command for {}: {}", dev.name, e),
+            );
+        }
+
+        let _ = client
+            .send_command::<()>(BWRPCatalog::PAIRED_DEVICE_COUNT_GET, None)
+            .await;
+
+        (
+            true,
+            format!(
+                "Requested disconnection from multipoint device [{}]: {} ({})",
+                dev.id, dev.name, dev.address
+            ),
+        )
+    }
+
+    /// Connects to a headphone by name substring or Bluetooth MAC address.
+    ///
+    /// Ensures connection in BlueZ first if not already connected, then establishes
+    /// the vendor-specific control session (L2CAP for Apple, BLE GATT for B&W).
     pub async fn connect_device(&self, target: &str) -> (bool, String) {
         let devices = match BluetoothInventory::fetch_paired_devices().await {
             Ok(d) => d,
@@ -192,11 +364,19 @@ impl DeviceManager {
         self.connect_vendor_session(&device).await
     }
 
+    /// Disconnects the active vendor session, clears cached state, and notifies clients via D-Bus.
     pub async fn disconnect_device(&self) -> bool {
         let old_addr = self.active_address.write().await.take();
         *self.active_apple_session.lock().await = None;
-        *self.active_sony_session.lock().await = None;
         *self.active_bw_client.lock().await = None;
+        *self.bw_bass.write().await = None;
+        *self.bw_treble.write().await = None;
+        *self.bw_eq_5band.write().await = None;
+        *self.bw_supports_5band.write().await = false;
+        *self.bw_supports_tone.write().await = false;
+        self.bw_paired_devices.write().await.clear();
+        *self.bw_wear_sensitivity.write().await = None;
+        *self.last_reconnect_attempt.lock().await = None;
 
         let dbus_conn = self.dbus_conn.lock().await.clone();
         if let Some(conn) = dbus_conn.as_ref() {
@@ -221,6 +401,7 @@ impl DeviceManager {
             s.in_ear = false;
             s.in_ear_primary = String::new();
             s.in_ear_secondary = String::new();
+            s.wear_sensitivity = -1;
             n
         };
 
@@ -236,6 +417,7 @@ impl DeviceManager {
         true
     }
 
+    /// Sets the Active Noise Cancellation / Listening mode (`"off"`, `"anc"`, `"ambient"` / `"transparency"`, `"adaptive"`, `"wind"`).
     pub async fn set_anc(&self, mode_str: &str) -> (bool, String) {
         let mode_norm = mode_str.to_lowercase();
 
@@ -319,29 +501,16 @@ impl DeviceManager {
             return (true, format!("ANC mode set to {}", mode_norm));
         }
 
-        // 2. Sony
-        let sony_session = self.active_sony_session.lock().await.clone();
-        if let Some(session) = sony_session {
-            if let Err(e) = session.set_noise_mode(&mode_norm, 10).await {
-                return (false, format!("Failed to send Sony ANC command: {}", e));
-            }
-            self.state.write().await.noise_mode = mode_norm.clone();
-            self.notify_state_changed().await;
-            return (true, format!("Sony ANC mode set to {}", mode_norm));
-        }
-
-        // 3. Bowers & Wilkins
+        // 2. Bowers & Wilkins
         let bw_client = self.active_bw_client.lock().await.clone();
         if let Some(client) = bw_client {
-            let bw_mode: u8 = match mode_norm.as_str() {
-                "off" => 0,
-                "anc" | "nc" | "on" => 1,
-                "ambient" | "transparency" => 2,
-                _ => 1,
-            };
+            let bw_mode = self.bw_anc_profile.read().await.to_wire_value(&mode_norm);
             if let Err(e) = client.set_anc(bw_mode).await {
                 return (false, format!("Failed to send B&W ANC command: {}", e));
             }
+            // Request read-back to confirm ANC mode
+            let _ = client.send_command::<()>(BWRPCatalog::ANC_GET, None).await;
+
             self.state.write().await.noise_mode = mode_norm.clone();
             self.notify_state_changed().await;
             return (
@@ -353,75 +522,152 @@ impl DeviceManager {
         (false, "No active headphone session connected".to_string())
     }
 
-    pub async fn set_ambient_level(&self, level: i32) -> bool {
-        let sony_session = self.active_sony_session.lock().await.clone();
-        if let Some(session) = sony_session {
-            let current_mode = self.state.read().await.noise_mode.clone();
-            if session.set_noise_mode(&current_mode, level).await.is_ok() {
-                self.notify_state_changed().await;
-                true
-            } else {
-                false
-            }
-        } else {
-            false
-        }
-    }
-
+    /// Configures tone controls or equalizers, or queries current settings if `args` is empty.
+    ///
+    /// Supports Bowers & Wilkins 2-band Bass / Treble tone controls (-6 to +6 dB, e.g. `"bass 2 treble -1"`, `"3 -1"`, `"flat"`)
+    /// and 5-band parametric equalizers (e.g. `"0 1 2 1 0"`).
     pub async fn set_equalizer(&self, args: &str) -> (bool, String) {
-        // Sony: parse preset or bands
-        let sony_session = self.active_sony_session.lock().await.clone();
-        if let Some(session) = sony_session {
-            if let Some(preset) = match args.to_lowercase().as_str() {
-                "off" => Some(SonyV1EqualizerPreset::Off),
-                "bright" => Some(SonyV1EqualizerPreset::Bright),
-                "excited" => Some(SonyV1EqualizerPreset::Excited),
-                "mellow" => Some(SonyV1EqualizerPreset::Mellow),
-                "relaxed" => Some(SonyV1EqualizerPreset::Relaxed),
-                "vocal" => Some(SonyV1EqualizerPreset::Vocal),
-                "treble" => Some(SonyV1EqualizerPreset::TrebleBoost),
-                "bass" => Some(SonyV1EqualizerPreset::BassBoost),
-                "speech" => Some(SonyV1EqualizerPreset::Speech),
-                _ => None,
-            } && session.set_equalizer_preset(preset).await.is_ok()
-            {
-                self.state.write().await.equalizer_preset = args.to_string();
-                self.notify_state_changed().await;
-                return (true, format!("Sony Equalizer preset set to {}", args));
-            }
-
-            // Or parse comma-separated bands: "0,1,2,0,-1,3"
-            let values: Vec<i32> = args
-                .split([',', ' '])
-                .filter_map(|s| s.parse().ok())
-                .collect();
-            if !values.is_empty() && session.set_equalizer_bands(&values).await.is_ok() {
-                self.notify_state_changed().await;
-                return (
-                    true,
-                    format!("Sony Equalizer custom bands applied: {:?}", values),
-                );
+        let args_trim = args.trim();
+        if args_trim.is_empty() {
+            let preset = self.state.read().await.equalizer_preset.clone();
+            if preset.is_empty() {
+                return (true, "Equalizer: default / flat".to_string());
+            } else {
+                return (true, format!("Equalizer: {}", preset));
             }
         }
 
-        // B&W: parse bass and treble: "bass:2 treble:1" or "2 1"
+        // B&W: Equalizer & Tone Controls
         let bw_client = self.active_bw_client.lock().await.clone();
         if let Some(client) = bw_client {
-            let nums: Vec<i32> = args
-                .split_whitespace()
-                .filter_map(|s| s.parse().ok())
+            let lower = args_trim.to_lowercase();
+            let is_reset = lower == "flat" || lower == "reset" || lower == "off";
+
+            let tokens: Vec<&str> = args_trim
+                .split(|c: char| c.is_whitespace() || c == ',' || c == ':' || c == '=')
+                .filter(|s| !s.is_empty())
                 .collect();
-            let (bass, treble) = if nums.len() >= 2 {
-                (nums[0], nums[1])
+
+            let has_labeled = tokens.iter().any(|&t| {
+                let l = t.to_lowercase();
+                l == "bass" || l == "treble"
+            });
+
+            let mut bass: Option<i32> = None;
+            let mut treble: Option<i32> = None;
+            let mut five_bands: Option<Vec<i32>> = None;
+
+            if is_reset {
+                bass = Some(0);
+                treble = Some(0);
+                five_bands = Some(vec![0, 0, 0, 0, 0]);
+            } else if has_labeled {
+                let mut i = 0;
+                while i < tokens.len() {
+                    let tok = tokens[i].to_lowercase();
+                    if tok == "bass" && i + 1 < tokens.len() {
+                        if let Some(val) = parse_bw_level(tokens[i + 1]) {
+                            bass = Some(val);
+                        }
+                        i += 2;
+                    } else if tok == "treble" && i + 1 < tokens.len() {
+                        if let Some(val) = parse_bw_level(tokens[i + 1]) {
+                            treble = Some(val);
+                        }
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
             } else {
-                (0, 0)
-            };
-            if client.set_bass_treble(bass, treble).await.is_ok() {
+                let nums: Vec<i32> = tokens.iter().filter_map(|t| parse_bw_level(t)).collect();
+                if nums.len() >= 5 {
+                    five_bands = Some(nums[..5].to_vec());
+                } else if nums.len() == 2 {
+                    bass = Some(nums[0]);
+                    treble = Some(nums[1]);
+                } else if nums.len() == 1 {
+                    if nums[0] == 0 {
+                        bass = Some(0);
+                        treble = Some(0);
+                        five_bands = Some(vec![0, 0, 0, 0, 0]);
+                    } else {
+                        bass = Some(nums[0]);
+                    }
+                }
+            }
+
+            let supports_5band = *self.bw_supports_5band.read().await;
+            let supports_tone = *self.bw_supports_tone.read().await;
+
+            if let Some(bands) = five_bands
+                && (!supports_tone || supports_5band)
+            {
+                if let Err(e) = client.send_command(BWRPCatalog::EQ_SET, Some(&bands)).await {
+                    return (
+                        false,
+                        format!("Failed to send B&W 5-band EQ command: {}", e),
+                    );
+                }
+                let _ = client.send_command::<()>(BWRPCatalog::EQ_GET, None).await;
+                *self.bw_eq_5band.write().await = Some(bands.clone());
+                let status_str = format!("5-band EQ: {}", format_bw_5band(&bands));
+                self.state.write().await.equalizer_preset = status_str.clone();
                 self.notify_state_changed().await;
-                return (
-                    true,
-                    format!("B&W tone controls set: Bass={}, Treble={}", bass, treble),
-                );
+                return (true, format!("B&W equalizer updated: {}", status_str));
+            }
+
+            if bass.is_some() || treble.is_some() {
+                // If device only supports 5-band EQ (Px7 S3)
+                if supports_5band && !supports_tone {
+                    let mut bands = self
+                        .bw_eq_5band
+                        .read()
+                        .await
+                        .clone()
+                        .unwrap_or_else(|| vec![0, 0, 0, 0, 0]);
+                    if let Some(b) = bass {
+                        bands[0] = b;
+                    }
+                    if let Some(t) = treble {
+                        bands[4] = t;
+                    }
+                    if let Err(e) = client.send_command(BWRPCatalog::EQ_SET, Some(&bands)).await {
+                        return (
+                            false,
+                            format!("Failed to send B&W 5-band EQ command: {}", e),
+                        );
+                    }
+                    let _ = client.send_command::<()>(BWRPCatalog::EQ_GET, None).await;
+                    *self.bw_eq_5band.write().await = Some(bands.clone());
+                    let status_str = format!("5-band EQ: {}", format_bw_5band(&bands));
+                    self.state.write().await.equalizer_preset = status_str.clone();
+                    self.notify_state_changed().await;
+                    return (true, format!("B&W equalizer updated: {}", status_str));
+                }
+
+                // Standard tone controls (Px7 S2, Px7 S2e, Px8)
+                if let Some(b) = bass {
+                    if let Err(e) = client.send_command(BWRPCatalog::BASS_SET, Some(&b)).await {
+                        return (false, format!("Failed to set B&W bass: {}", e));
+                    }
+                    let _ = client.send_command::<()>(BWRPCatalog::BASS_GET, None).await;
+                    *self.bw_bass.write().await = Some(b);
+                }
+                if let Some(t) = treble {
+                    if let Err(e) = client.send_command(BWRPCatalog::TREBLE_SET, Some(&t)).await {
+                        return (false, format!("Failed to set B&W treble: {}", e));
+                    }
+                    let _ = client
+                        .send_command::<()>(BWRPCatalog::TREBLE_GET, None)
+                        .await;
+                    *self.bw_treble.write().await = Some(t);
+                }
+                let status_str =
+                    format_bw_tone(*self.bw_bass.read().await, *self.bw_treble.read().await);
+                self.state.write().await.equalizer_preset = status_str.clone();
+                self.notify_state_changed().await;
+                return (true, format!("B&W tone controls updated: {}", status_str));
             }
         }
 
@@ -431,6 +677,7 @@ impl DeviceManager {
         )
     }
 
+    /// Configures the auto-standby / auto-power-off timer in minutes for Bowers & Wilkins headphones.
     pub async fn set_standby(&self, val: &str) -> bool {
         let minutes: i32 = val.parse().unwrap_or(15);
 
@@ -444,30 +691,10 @@ impl DeviceManager {
             return true;
         }
 
-        // Sony
-        let sony_session = self.active_sony_session.lock().await.clone();
-        if let Some(session) = sony_session {
-            let mode = if minutes <= 0 {
-                SonyV1AutomaticPowerOff::Off
-            } else if minutes <= 5 {
-                SonyV1AutomaticPowerOff::After5Minutes
-            } else if minutes <= 30 {
-                SonyV1AutomaticPowerOff::After30Minutes
-            } else if minutes <= 60 {
-                SonyV1AutomaticPowerOff::After1Hour
-            } else {
-                SonyV1AutomaticPowerOff::After3Hours
-            };
-            if session.set_automatic_power_off(mode).await.is_ok() {
-                self.state.write().await.standby_minutes = minutes;
-                self.notify_state_changed().await;
-                return true;
-            }
-        }
-
         false
     }
 
+    /// Remaps the physical quick action button (`"anc"` or `"voice"`) on Bowers & Wilkins headphones.
     pub async fn set_action_button(&self, action: &str) -> (bool, String) {
         let bw_client = self.active_bw_client.lock().await.clone();
         if let Some(client) = bw_client {
@@ -487,50 +714,7 @@ impl DeviceManager {
         )
     }
 
-    pub async fn set_touch_sensor(&self, enabled: bool) -> bool {
-        let sony_session = self.active_sony_session.lock().await.clone();
-        if let Some(session) = sony_session
-            && session.set_touch_sensor(enabled).await.is_ok()
-        {
-            self.state.write().await.touch_sensor = enabled;
-            self.notify_state_changed().await;
-            return true;
-        }
-        false
-    }
-
-    pub async fn set_dsee(&self, enabled: bool) -> bool {
-        let sony_session = self.active_sony_session.lock().await.clone();
-        if let Some(session) = sony_session
-            && session.set_dsee(enabled).await.is_ok()
-        {
-            self.state.write().await.dsee = enabled;
-            self.notify_state_changed().await;
-            return true;
-        }
-        false
-    }
-
-    pub async fn optimize(&self, action: &str) -> (bool, String) {
-        let sony_session = self.active_sony_session.lock().await.clone();
-        if let Some(session) = sony_session {
-            let start = !action.to_lowercase().contains("stop");
-            if session.set_optimizer(start).await.is_ok() {
-                return (
-                    true,
-                    format!(
-                        "Sony Optimizer calibration {}",
-                        if start { "started" } else { "stopped" }
-                    ),
-                );
-            }
-        }
-        (
-            false,
-            "NC Optimizer is only available on supported Sony MDR headphones".to_string(),
-        )
-    }
-
+    /// Enables or disables Conversation Awareness on AirPods Pro 2 / AirPods 4 ANC.
     pub async fn set_conversation_awareness(&self, enabled: bool) -> bool {
         let apple_session = self.active_apple_session.lock().await.clone();
         if let Some(session) = apple_session
@@ -543,6 +727,7 @@ impl DeviceManager {
         false
     }
 
+    /// Enables or disables hardware in-ear wear sensors (Apple, Bowers & Wilkins).
     pub async fn set_ear_detection(&self, enabled: bool) -> bool {
         // Apple
         let apple_session = self.active_apple_session.lock().await.clone();
@@ -567,6 +752,95 @@ impl DeviceManager {
         false
     }
 
+    /// Sets the wear sensor sensitivity for Bowers & Wilkins headphones (0 = Low, 1 = Normal/Medium, 2 = High).
+    pub async fn set_wear_sensor_sensitivity(&self, level: u8) -> bool {
+        let bw_client = self.active_bw_client.lock().await.clone();
+        if let Some(client) = bw_client
+            && client.set_wear_sensor_sensitivity(level).await.is_ok()
+        {
+            *self.bw_wear_sensitivity.write().await = Some(level);
+            self.state.write().await.wear_sensitivity = level as i32;
+            self.notify_state_changed().await;
+            return true;
+        }
+        false
+    }
+
+    /// Returns the current wear sensor sensitivity for Bowers & Wilkins headphones, if known.
+    pub async fn get_wear_sensor_sensitivity(&self) -> Option<u8> {
+        *self.bw_wear_sensitivity.read().await
+    }
+
+    /// Configures wear sensor state or sensitivity via action string (`"on"`, `"off"`, `"low"`, `"medium"`, `"high"`).
+    pub async fn set_wear_sensor_string(&self, action: &str) -> (bool, String) {
+        let action_clean = action.trim().to_lowercase();
+        match action_clean.as_str() {
+            "on" | "enable" | "true" | "1" => {
+                let ok = self.set_ear_detection(true).await;
+                (
+                    ok,
+                    if ok {
+                        "Wear sensor enabled.".to_string()
+                    } else {
+                        "Failed to enable wear sensor.".to_string()
+                    },
+                )
+            }
+            "off" | "disable" | "false" | "0" => {
+                let ok = self.set_ear_detection(false).await;
+                (
+                    ok,
+                    if ok {
+                        "Wear sensor disabled.".to_string()
+                    } else {
+                        "Failed to disable wear sensor.".to_string()
+                    },
+                )
+            }
+            "low" => {
+                let ok = self.set_wear_sensor_sensitivity(0).await;
+                (
+                    ok,
+                    if ok {
+                        "Bowers & Wilkins wear sensor sensitivity set to: Low".to_string()
+                    } else {
+                        "Failed to set wear sensor sensitivity.".to_string()
+                    },
+                )
+            }
+            "medium" | "normal" => {
+                let ok = self.set_wear_sensor_sensitivity(1).await;
+                (
+                    ok,
+                    if ok {
+                        "Bowers & Wilkins wear sensor sensitivity set to: Normal / Medium".to_string()
+                    } else {
+                        "Failed to set wear sensor sensitivity.".to_string()
+                    },
+                )
+            }
+            "high" => {
+                let ok = self.set_wear_sensor_sensitivity(2).await;
+                (
+                    ok,
+                    if ok {
+                        "Bowers & Wilkins wear sensor sensitivity set to: High".to_string()
+                    } else {
+                        "Failed to set wear sensor sensitivity.".to_string()
+                    },
+                )
+            }
+            other => (
+                false,
+                format!(
+                    "Unknown wear sensor action '{}'. Use on, off, low, medium, or high.",
+                    other
+                ),
+            ),
+        }
+    }
+
+    /// Configures active microphone selection (`"auto"`, `"left"`, `"right"`) for Apple accessories.
     pub async fn set_mic_mode(&self, mode_str: &str) -> bool {
         let mode = match mode_str.to_lowercase().as_str() {
             "auto" => MicSelection::Auto,
@@ -586,6 +860,7 @@ impl DeviceManager {
         false
     }
 
+    /// Enables or disables single-bud active noise cancellation permission on Apple accessories.
     pub async fn set_one_bud_anc(&self, enabled: bool) -> bool {
         let apple_session = self.active_apple_session.lock().await.clone();
         if let Some(session) = apple_session
@@ -598,6 +873,7 @@ impl DeviceManager {
         false
     }
 
+    /// Configures case speaker and bud alert chime volume (`0..=100`) on AirPods Pro 2.
     pub async fn set_chime_volume(&self, vol: u8) -> bool {
         let apple_session = self.active_apple_session.lock().await.clone();
         if let Some(session) = apple_session
@@ -611,7 +887,10 @@ impl DeviceManager {
     }
 
     async fn connect_vendor_session(&self, device: &PairedDevice) -> (bool, String) {
-        self.disconnect_device().await;
+        let is_same_device = self.active_address.read().await.as_deref() == Some(&device.address);
+        if !is_same_device {
+            self.disconnect_device().await;
+        }
 
         match device.vendor {
             DeviceVendor::Apple => {
@@ -858,14 +1137,17 @@ impl DeviceManager {
 
                                             let dbus_conn = dbus_conn_clone.lock().await.clone();
                                             if let Some(conn) = dbus_conn.as_ref() {
-                                                auto_pause_clone
-                                                    .lock()
-                                                    .await
-                                                    .on_ear_status_update(in_ear, conn)
-                                                    .await;
+                                                crate::audio::AutoPauseCoordinator::on_ear_status_update(
+                                                    auto_pause_clone.clone(),
+                                                    in_ear,
+                                                    conn,
+                                                )
+                                                .await;
                                             }
 
                                             // Auto-restore preferred ANC / listening mode when putting earbuds in!
+                                            let current_noise_mode =
+                                                state_clone.read().await.noise_mode.clone();
                                             if !was_wearing
                                                 && is_wearing
                                                 && let Some(pref) = settings_clone
@@ -884,7 +1166,15 @@ impl DeviceManager {
                                                     "adaptive" => Some(ListeningMode::Adaptive),
                                                     _ => None,
                                                 };
+                                                let expected_mode = match pref.as_str() {
+                                                    "off" => "off",
+                                                    "anc" | "nc" | "on" => "anc",
+                                                    "ambient" | "transparency" => "ambient",
+                                                    "adaptive" => "adaptive",
+                                                    _ => "",
+                                                };
                                                 if let Some(m) = target_mode
+                                                    && current_noise_mode != expected_mode
                                                     && let Some(session) =
                                                         active_apple_session_clone
                                                             .lock()
@@ -988,147 +1278,490 @@ impl DeviceManager {
                 let address = device.address.clone();
                 let name = device.name.clone();
 
+                // Select initial ANC wire profile based on device name
+                let detected_profile = BwAncWireProfile::for_device_name(&name);
+                *self.bw_anc_profile.write().await = detected_profile;
+
                 let conn_res = Connection::system().await;
-                if let Ok(conn) = conn_res
-                    && let Ok(Some(paths)) = BluezGattClient::resolve_paths(&conn, &address).await
-                    && let Ok(client) =
-                        BluezGattClient::new(conn, &paths.request_path, &paths.response_path).await
-                {
-                    // Query initial state from headphone
-                    let _ = client.send_command::<()>(BWRPCatalog::ANC_GET, None).await;
-                    let _ = client
-                        .send_command::<()>(BWRPCatalog::BATTERY_PERCENTAGE_GET, None)
-                        .await;
-                    let _ = client
-                        .send_command::<()>(BWRPCatalog::CHARGING_STATUS_GET, None)
-                        .await;
-                    let _ = client.send_command::<()>(BWRPCatalog::WEAR_GET, None).await;
+                let mut gatt_ready = false;
 
-                    // Listen for incoming notifications / response value changes
-                    let mut stream = client.resp_char.receive_value_changed().await;
-                    let state_clone = self.state.clone();
-                    let active_addr_clone = self.active_address.clone();
-                    let notif_clone = self.notifications.clone();
-                    let dbus_conn_clone = self.dbus_conn.clone();
-                    let expected_addr = address.clone();
-                    let dev_name = name.clone();
-                    let active_bw_client_clone = self.active_bw_client.clone();
-
-                    let reader_task = tokio::spawn(async move {
-                        use futures_lite::StreamExt;
-                        while let Some(change) = stream.next().await {
-                            if active_addr_clone.read().await.as_deref() != Some(&expected_addr) {
-                                break;
-                            }
-                            if let Ok(raw) = change.get().await
-                                && let Ok(msg) = BWRPC::decode(&raw)
+                if let Ok(conn) = conn_res {
+                    match BluezGattClient::resolve_paths(&conn, &address).await {
+                        Ok(Some(paths)) => {
+                            match BluezGattClient::new(
+                                conn,
+                                &paths.request_path,
+                                &paths.response_path,
+                                paths.notification_path.as_deref(),
+                            )
+                            .await
                             {
-                                let mut state_changed = false;
-                                match (msg.command.namespace, msg.command.id) {
-                                    (0x03, 0x01) | (0x03, 0x02) => {
-                                        if let Some(Ok(val)) = msg.deserialize_payload::<u8>() {
-                                            let mode = match val {
-                                                0 => "off",
-                                                1 => "anc",
-                                                2 => "transparency",
-                                                _ => "anc",
-                                            };
-                                            let mut s = state_clone.write().await;
-                                            if s.noise_mode != mode {
-                                                s.noise_mode = mode.to_string();
-                                                state_changed = true;
-                                            }
-                                        }
-                                    }
-                                    (0x08, 0x0C) => {
-                                        if let Some(Ok(val)) =
-                                            msg.deserialize_payload::<i32>().or_else(|| {
-                                                msg.deserialize_payload::<u8>()
-                                                    .map(|r| r.map(|v| v as i32))
-                                            })
-                                        {
-                                            let mut s = state_clone.write().await;
-                                            if s.battery_percent != val {
-                                                s.battery_percent = val;
-                                                state_changed = true;
-                                            }
-                                            drop(s);
-                                            notif_clone
-                                                .lock()
-                                                .await
-                                                .check_battery(&dev_name, val)
-                                                .await;
-                                        }
-                                    }
-                                    (0x08, 0x0B) => {
-                                        let is_charging = msg
-                                            .deserialize_payload::<bool>()
-                                            .and_then(|r| r.ok())
-                                            .or_else(|| {
-                                                msg.deserialize_payload::<u8>()
-                                                    .and_then(|r| r.ok())
-                                                    .map(|v| v != 0)
-                                            });
-                                        if let Some(charging) = is_charging {
-                                            let mut s = state_clone.write().await;
-                                            if s.is_charging != charging {
-                                                s.is_charging = charging;
-                                                state_changed = true;
-                                            }
-                                        }
-                                    }
-                                    (0x0A, 0x01) | (0x0A, 0x02) => {
-                                        let wear = msg
-                                            .deserialize_payload::<bool>()
-                                            .and_then(|r| r.ok())
-                                            .or_else(|| {
-                                                msg.deserialize_payload::<u8>()
-                                                    .and_then(|r| r.ok())
-                                                    .map(|v| v != 0)
-                                            });
-                                        if let Some(wear_val) = wear {
-                                            let mut s = state_clone.write().await;
-                                            if s.ear_detection != wear_val {
-                                                s.ear_detection = wear_val;
-                                                state_changed = true;
-                                            }
-                                        }
-                                    }
-                                    _ => {}
-                                }
+                                Ok(client) => {
+                                    gatt_ready = true;
+                                    // Query initial state from headphone
+                                    let _ =
+                                        client.send_command::<()>(BWRPCatalog::ANC_GET, None).await;
+                                    let _ = client
+                                        .send_command::<()>(
+                                            BWRPCatalog::BATTERY_PERCENTAGE_GET,
+                                            None,
+                                        )
+                                        .await;
+                                    let _ = client
+                                        .send_command::<()>(BWRPCatalog::CHARGING_STATUS_GET, None)
+                                        .await;
+                                    let _ = client
+                                        .send_command::<()>(BWRPCatalog::WEAR_GET, None)
+                                        .await;
+                                    let _ = client
+                                        .send_command::<()>(
+                                            BWRPCatalog::WEAR_SENSITIVITY_GET,
+                                            None,
+                                        )
+                                        .await;
+                                    let _ = client
+                                        .send_command::<()>(BWRPCatalog::BASS_GET, None)
+                                        .await;
+                                    let _ = client
+                                        .send_command::<()>(BWRPCatalog::TREBLE_GET, None)
+                                        .await;
+                                    let _ =
+                                        client.send_command::<()>(BWRPCatalog::EQ_GET, None).await;
+                                    let _ = client
+                                        .send_command::<()>(BWRPCatalog::SLEEP_GET, None)
+                                        .await;
+                                    let _ = client
+                                        .send_command::<()>(
+                                            BWRPCatalog::PAIRED_DEVICE_COUNT_GET,
+                                            None,
+                                        )
+                                        .await;
 
-                                if state_changed {
-                                    let s = state_clone.read().await;
-                                    let json = format_state_json(&s);
-                                    drop(s);
-                                    if let Some(conn) = dbus_conn_clone.lock().await.as_ref() {
-                                        let _ = conn
-                                            .emit_signal(
-                                                None::<()>,
-                                                "/org/headbridge",
-                                                "org.headbridge.Manager",
-                                                "StateChanged",
-                                                &(json,),
-                                            )
-                                            .await;
+                                    let (pkt_tx, mut pkt_rx) = mpsc::channel::<Vec<u8>>(64);
+
+                                    // Forward value changes from resp_char
+                                    let tx1 = pkt_tx.clone();
+                                    let mut resp_stream =
+                                        client.resp_char.receive_value_changed().await;
+                                    let active_addr_clone = self.active_address.clone();
+                                    let expected_addr = address.clone();
+                                    let addr_check1 = active_addr_clone.clone();
+                                    let exp_addr1 = expected_addr.clone();
+                                    tokio::spawn(async move {
+                                        use futures_lite::StreamExt;
+                                        while let Some(change) = resp_stream.next().await {
+                                            if addr_check1.read().await.as_deref()
+                                                != Some(&exp_addr1)
+                                            {
+                                                break;
+                                            }
+                                            if let Ok(raw) = change.get().await
+                                                && tx1.send(raw).await.is_err()
+                                            {
+                                                break;
+                                            }
+                                        }
+                                    });
+
+                                    // Forward value changes from notif_char if present
+                                    if let Some(ref notif_char) = client.notif_char {
+                                        let tx2 = pkt_tx.clone();
+                                        let mut notif_stream =
+                                            notif_char.receive_value_changed().await;
+                                        let addr_check2 = active_addr_clone.clone();
+                                        let exp_addr2 = expected_addr.clone();
+                                        tokio::spawn(async move {
+                                            use futures_lite::StreamExt;
+                                            while let Some(change) = notif_stream.next().await {
+                                                if addr_check2.read().await.as_deref()
+                                                    != Some(&exp_addr2)
+                                                {
+                                                    break;
+                                                }
+                                                if let Ok(raw) = change.get().await
+                                                    && tx2.send(raw).await.is_err()
+                                                {
+                                                    break;
+                                                }
+                                            }
+                                        });
                                     }
+
+                                    // Reader task processing all incoming BWRPC packets
+                                    let state_clone = self.state.clone();
+                                    let notif_clone = self.notifications.clone();
+                                    let dbus_conn_clone = self.dbus_conn.clone();
+                                    let dev_name = name.clone();
+                                    let active_bw_client_clone = self.active_bw_client.clone();
+                                    let bw_anc_profile_clone = self.bw_anc_profile.clone();
+                                    let bw_bass_clone = self.bw_bass.clone();
+                                    let bw_treble_clone = self.bw_treble.clone();
+                                    let bw_eq_5band_clone = self.bw_eq_5band.clone();
+                                    let bw_supports_5band_clone = self.bw_supports_5band.clone();
+                                    let bw_supports_tone_clone = self.bw_supports_tone.clone();
+                                    let bw_paired_devices_clone = self.bw_paired_devices.clone();
+                                    let bw_wear_sensitivity_clone = self.bw_wear_sensitivity.clone();
+                                    let auto_pause_clone = self.auto_pause.clone();
+                                    let exp_addr_main = expected_addr.clone();
+
+                                    let reader_task = tokio::spawn(async move {
+                                        while let Some(raw) = pkt_rx.recv().await {
+                                            if active_addr_clone.read().await.as_deref()
+                                                != Some(&exp_addr_main)
+                                            {
+                                                break;
+                                            }
+                                            if let Ok(msg) = BWRPC::decode(&raw) {
+                                                let mut state_changed = false;
+
+                                                // Dynamic profile fallback on error 6
+                                                if msg.command.namespace == 0x03
+                                                    && msg.command.id == 0x02
+                                                    && msg.error_code == 6
+                                                {
+                                                    let mut prof =
+                                                        bw_anc_profile_clone.write().await;
+                                                    if *prof != BwAncWireProfile::OriginalPx8 {
+                                                        eprintln!(
+                                                            "[B&W] ANC command returned error 6; falling back to OriginalPx8 profile"
+                                                        );
+                                                        *prof = BwAncWireProfile::OriginalPx8;
+                                                    }
+                                                }
+
+                                                match (msg.command.namespace, msg.command.id) {
+                                                    (0x03, 0x01) | (0x03, 0x02) => {
+                                                        let wire_val = msg
+                                                            .deserialize_payload::<u8>()
+                                                            .and_then(|r| r.ok())
+                                                            .or_else(|| {
+                                                                msg.deserialize_payload::<i32>()
+                                                                    .and_then(|r| r.ok())
+                                                                    .map(|v| v as u8)
+                                                            })
+                                                            .or_else(|| {
+                                                                msg.deserialize_payload::<i64>()
+                                                                    .and_then(|r| r.ok())
+                                                                    .map(|v| v as u8)
+                                                            });
+                                                        if let Some(val) = wire_val {
+                                                            let prof =
+                                                                *bw_anc_profile_clone.read().await;
+                                                            let mode = prof.from_wire_value(val);
+                                                            let mut s = state_clone.write().await;
+                                                            if s.noise_mode != mode {
+                                                                s.noise_mode = mode.to_string();
+                                                                state_changed = true;
+                                                            }
+                                                        }
+                                                    }
+                                                    (0x08, 0x0C) => {
+                                                        if let Some(Ok(val)) = msg
+                                                            .deserialize_payload::<i32>()
+                                                            .or_else(|| {
+                                                                msg.deserialize_payload::<u8>()
+                                                                    .map(|r| r.map(|v| v as i32))
+                                                            })
+                                                        {
+                                                            let mut s = state_clone.write().await;
+                                                            if s.battery_percent != val {
+                                                                s.battery_percent = val;
+                                                                state_changed = true;
+                                                            }
+                                                            drop(s);
+                                                            notif_clone
+                                                                .lock()
+                                                                .await
+                                                                .check_battery(&dev_name, val)
+                                                                .await;
+                                                        }
+                                                    }
+                                                    (0x08, 0x0B) => {
+                                                        let is_charging = msg
+                                                            .deserialize_payload::<bool>()
+                                                            .and_then(|r| r.ok())
+                                                            .or_else(|| {
+                                                                msg.deserialize_payload::<u8>()
+                                                                    .and_then(|r| r.ok())
+                                                                    .map(|v| v != 0)
+                                                            });
+                                                        if let Some(charging) = is_charging {
+                                                            let mut s = state_clone.write().await;
+                                                            if s.is_charging != charging {
+                                                                s.is_charging = charging;
+                                                                state_changed = true;
+                                                            }
+                                                        }
+                                                    }
+                                                    (0x0A, 0x01) | (0x0A, 0x02) => {
+                                                        let wear = msg
+                                                            .deserialize_payload::<bool>()
+                                                            .and_then(|r| r.ok())
+                                                            .or_else(|| {
+                                                                msg.deserialize_payload::<u8>()
+                                                                    .and_then(|r| r.ok())
+                                                                    .map(|v| v != 0)
+                                                            });
+                                                        if let Some(wear_val) = wear {
+                                                            let mut s = state_clone.write().await;
+                                                            if msg.kind == BWRPCMessageKind::Notification {
+                                                                if s.in_ear != wear_val {
+                                                                    s.in_ear = wear_val;
+                                                                    state_changed = true;
+                                                                }
+                                                            } else {
+                                                                if s.ear_detection != wear_val {
+                                                                    s.ear_detection = wear_val;
+                                                                    state_changed = true;
+                                                                }
+                                                            }
+                                                            drop(s);
+
+                                                            if msg.kind == BWRPCMessageKind::Notification {
+                                                                let dbus_conn = dbus_conn_clone.lock().await.clone();
+                                                                if let Some(conn) = dbus_conn.as_ref() {
+                                                                    crate::audio::AutoPauseCoordinator::on_wear_sensor_update(
+                                                                        auto_pause_clone.clone(),
+                                                                        wear_val,
+                                                                        conn,
+                                                                    )
+                                                                    .await;
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    (0x0A, 0x03) | (0x0A, 0x04)
+                                                        if msg.succeeded() =>
+                                                    {
+                                                        if let Some(sens) = msg
+                                                            .deserialize_payload::<u8>()
+                                                            .and_then(|r| r.ok())
+                                                            .or_else(|| {
+                                                                msg.deserialize_payload::<i32>()
+                                                                    .and_then(|r| r.ok())
+                                                                    .map(|v| v as u8)
+                                                            })
+                                                        {
+                                                            *bw_wear_sensitivity_clone.write().await = Some(sens);
+                                                            let mut s = state_clone.write().await;
+                                                            if s.wear_sensitivity != sens as i32 {
+                                                                s.wear_sensitivity = sens as i32;
+                                                                state_changed = true;
+                                                            }
+                                                        }
+                                                    }
+                                                    (0x04, 0x18) | (0x04, 0x17)
+                                                        if msg.succeeded() =>
+                                                    {
+                                                        if let Some(val) = msg
+                                                            .deserialize_payload::<i32>()
+                                                            .and_then(|r| r.ok())
+                                                            .or_else(|| {
+                                                                msg.deserialize_payload::<i8>()
+                                                                    .and_then(|r| r.ok())
+                                                                    .map(|v| v as i32)
+                                                            })
+                                                        {
+                                                            *bw_supports_tone_clone.write().await =
+                                                                true;
+                                                            *bw_bass_clone.write().await =
+                                                                Some(val);
+                                                            let mut s = state_clone.write().await;
+                                                            s.equalizer_preset = format_bw_tone(
+                                                                *bw_bass_clone.read().await,
+                                                                *bw_treble_clone.read().await,
+                                                            );
+                                                            state_changed = true;
+                                                        }
+                                                    }
+                                                    (0x04, 0x1A) | (0x04, 0x19)
+                                                        if msg.succeeded() =>
+                                                    {
+                                                        if let Some(val) = msg
+                                                            .deserialize_payload::<i32>()
+                                                            .and_then(|r| r.ok())
+                                                            .or_else(|| {
+                                                                msg.deserialize_payload::<i8>()
+                                                                    .and_then(|r| r.ok())
+                                                                    .map(|v| v as i32)
+                                                            })
+                                                        {
+                                                            *bw_supports_tone_clone.write().await =
+                                                                true;
+                                                            *bw_treble_clone.write().await =
+                                                                Some(val);
+                                                            let mut s = state_clone.write().await;
+                                                            s.equalizer_preset = format_bw_tone(
+                                                                *bw_bass_clone.read().await,
+                                                                *bw_treble_clone.read().await,
+                                                            );
+                                                            state_changed = true;
+                                                        }
+                                                    }
+                                                    (0x04, 0x2A) | (0x04, 0x29)
+                                                        if msg.succeeded() =>
+                                                    {
+                                                        if let Some(bands) = msg
+                                                            .deserialize_payload::<Vec<i32>>()
+                                                            .and_then(|r| r.ok())
+                                                            && bands.len() >= 5
+                                                        {
+                                                            *bw_supports_5band_clone
+                                                                .write()
+                                                                .await = true;
+                                                            let bands5 = bands[..5].to_vec();
+                                                            *bw_eq_5band_clone.write().await =
+                                                                Some(bands5.clone());
+                                                            let mut s = state_clone.write().await;
+                                                            s.equalizer_preset = format!(
+                                                                "5-band EQ: {}",
+                                                                format_bw_5band(&bands5)
+                                                            );
+                                                            state_changed = true;
+                                                        }
+                                                    }
+                                                    (0x05, 0x0B) if msg.succeeded() => {
+                                                        if let Some(count) =
+                                                            parse_bw_paired_count(&msg)
+                                                        {
+                                                            let client_opt = active_bw_client_clone
+                                                                .lock()
+                                                                .await
+                                                                .clone();
+                                                            if let Some(client) = client_opt {
+                                                                tokio::spawn(async move {
+                                                                    for i in 0..count {
+                                                                        let _ = client
+                                                                            .send_command(
+                                                                                BWRPCatalog::PAIRED_DEVICE_GET,
+                                                                                Some(&(i as u8)),
+                                                                            )
+                                                                            .await;
+                                                                        tokio::time::sleep(
+                                                                            Duration::from_millis(
+                                                                                30,
+                                                                            ),
+                                                                        )
+                                                                        .await;
+                                                                    }
+                                                                });
+                                                            }
+                                                        }
+                                                    }
+                                                    (0x05, 0x04) if msg.succeeded() => {
+                                                        if let Some(ref payload) = msg.payload_bytes
+                                                        {
+                                                            let current_count =
+                                                                bw_paired_devices_clone
+                                                                    .read()
+                                                                    .await
+                                                                    .len();
+                                                            if let Some(mut dev) =
+                                                                decode_paired_device(
+                                                                    current_count,
+                                                                    payload,
+                                                                )
+                                                            {
+                                                                let mut list =
+                                                                    bw_paired_devices_clone
+                                                                        .write()
+                                                                        .await;
+                                                                if let Some(pos) =
+                                                                    list.iter().position(|d| {
+                                                                        !d.address.is_empty()
+                                                                            && d.address
+                                                                                != "00:00:00:00:00:00"
+                                                                            && d.address
+                                                                                == dev.address
+                                                                    })
+                                                                {
+                                                                    dev.id = list[pos].id;
+                                                                    list[pos] = dev;
+                                                                } else {
+                                                                    dev.id = list.len();
+                                                                    list.push(dev);
+                                                                }
+                                                                list.sort_by_key(|d| d.id);
+                                                            }
+                                                        }
+                                                    }
+                                                    (0x05, 0x05) | (0x05, 0x06)
+                                                        if msg.succeeded() =>
+                                                    {
+                                                        let client_opt = active_bw_client_clone
+                                                            .lock()
+                                                            .await
+                                                            .clone();
+                                                        if let Some(client) = client_opt {
+                                                            tokio::spawn(async move {
+                                                                tokio::time::sleep(
+                                                                    Duration::from_millis(300),
+                                                                )
+                                                                .await;
+                                                                let _ = client
+                                                                    .send_command::<()>(
+                                                                        BWRPCatalog::PAIRED_DEVICE_COUNT_GET,
+                                                                        None,
+                                                                    )
+                                                                    .await;
+                                                            });
+                                                        }
+                                                    }
+                                                    _ => {}
+                                                }
+
+                                                if state_changed {
+                                                    let s = state_clone.read().await;
+                                                    let json = format_state_json(&s);
+                                                    drop(s);
+                                                    if let Some(conn) =
+                                                        dbus_conn_clone.lock().await.as_ref()
+                                                    {
+                                                        let _ = conn
+                                                            .emit_signal(
+                                                                None::<()>,
+                                                                "/org/headbridge",
+                                                                "org.headbridge.Manager",
+                                                                "StateChanged",
+                                                                &(json,),
+                                                            )
+                                                            .await;
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        println!("B&W GATT session ended for {}", exp_addr_main);
+                                        *active_bw_client_clone.lock().await = None;
+                                    });
+
+                                    let mut client = client;
+                                    client.set_reader_task(reader_task);
+                                    *self.active_bw_client.lock().await = Some(client);
+                                }
+                                Err(e) => {
+                                    eprintln!("[B&W] BluezGattClient::new error: {}", e);
                                 }
                             }
                         }
-
-                        println!("B&W GATT session ended for {}", expected_addr);
-                        *active_bw_client_clone.lock().await = None;
-                    });
-
-                    let mut client = client;
-                    client.set_reader_task(reader_task);
-                    *self.active_bw_client.lock().await = Some(client);
+                        Ok(None) => {
+                            eprintln!("[B&W] GATT paths not yet resolved for {}", address);
+                        }
+                        Err(e) => {
+                            eprintln!("[B&W] Error resolving GATT paths: {}", e);
+                        }
+                    }
                 }
 
+                let prev_addr = self.active_address.read().await.clone();
                 {
                     let mut s = self.state.write().await;
                     s.connected = true;
-                    s.connection_state = "connected".to_string();
+                    s.connection_state = if gatt_ready {
+                        "connected".to_string()
+                    } else {
+                        "connected (audio only)".to_string()
+                    };
                     s.device_name = name.clone();
                     s.vendor = "Bowers & Wilkins".to_string();
                     if let Some(p) = device.battery_percent {
@@ -1137,146 +1770,32 @@ impl DeviceManager {
                 }
 
                 *self.active_address.write().await = Some(address.clone());
-                self.notifications
-                    .lock()
-                    .await
-                    .notify_connected(
-                        &name,
-                        "Bowers & Wilkins",
-                        device.battery_percent.map(|b| b as i32),
-                    )
-                    .await;
+
+                // Only send notification if newly connected
+                if prev_addr.as_deref() != Some(&address) {
+                    self.notifications
+                        .lock()
+                        .await
+                        .notify_connected(
+                            &name,
+                            "Bowers & Wilkins",
+                            device.battery_percent.map(|b| b as i32),
+                        )
+                        .await;
+                }
                 self.notify_state_changed().await;
 
                 (
-                    true,
-                    format!("Connected to Bowers & Wilkins {} ({})", name, address),
+                    gatt_ready,
+                    if gatt_ready {
+                        format!("Connected to Bowers & Wilkins {} ({})", name, address)
+                    } else {
+                        format!(
+                            "Connected to Bowers & Wilkins {} ({}) [Audio only, GATT resolving]",
+                            name, address
+                        )
+                    },
                 )
-            }
-
-            DeviceVendor::Sony => {
-                let address = device.address.clone();
-                let name = device.name.clone();
-                let (tx, mut rx) = mpsc::channel::<SonyMDRPacket>(64);
-
-                match SonyMdrSession::start(&address, tx).await {
-                    Ok(session) => {
-                        *self.active_sony_session.lock().await = Some(session);
-                        *self.active_address.write().await = Some(address.clone());
-
-                        {
-                            let mut s = self.state.write().await;
-                            s.connected = true;
-                            s.connection_state = "connected".to_string();
-                            s.device_name = name.clone();
-                            s.vendor = "Sony".to_string();
-                            if let Some(p) = device.battery_percent {
-                                s.battery_percent = p as i32;
-                            }
-                        }
-
-                        self.notifications
-                            .lock()
-                            .await
-                            .notify_connected(
-                                &name,
-                                "Sony",
-                                device.battery_percent.map(|b| b as i32),
-                            )
-                            .await;
-                        self.notify_state_changed().await;
-
-                        let state_clone = self.state.clone();
-                        let active_addr_clone = self.active_address.clone();
-                        let notif_clone = self.notifications.clone();
-                        let dbus_conn_clone = self.dbus_conn.clone();
-                        let expected_addr = address.clone();
-                        let dev_name = name.clone();
-
-                        let active_sony_session_clone = self.active_sony_session.clone();
-                        tokio::spawn(async move {
-                            while let Some(pkt) = rx.recv().await {
-                                if active_addr_clone.read().await.as_deref() != Some(&expected_addr)
-                                {
-                                    break;
-                                }
-
-                                if let Some(&opcode) = pkt.payload.first() {
-                                    let mut state_changed = false;
-                                    // Battery report (0x20 or 0x21)
-                                    if opcode == 0x20 || opcode == 0x21 {
-                                        if pkt.payload.len() >= 3 {
-                                            let batt = pkt.payload[2] as i32;
-                                            let mut s = state_clone.write().await;
-                                            if s.battery_percent != batt {
-                                                s.battery_percent = batt;
-                                                state_changed = true;
-                                            }
-                                            drop(s);
-                                            notif_clone
-                                                .lock()
-                                                .await
-                                                .check_battery(&dev_name, batt)
-                                                .await;
-                                        }
-                                    }
-                                    // NC / Ambient report (0x22 or 0x23)
-                                    else if (opcode == 0x22 || opcode == 0x23)
-                                        && pkt.payload.len() >= 2
-                                    {
-                                        let mode = match pkt.payload[1] {
-                                            0x01 => "anc".to_string(),
-                                            0x02 => "ambient".to_string(),
-                                            _ => "off".to_string(),
-                                        };
-                                        let mut s = state_clone.write().await;
-                                        if s.noise_mode != mode {
-                                            s.noise_mode = mode;
-                                            state_changed = true;
-                                        }
-                                    }
-
-                                    if state_changed {
-                                        let s = state_clone.read().await;
-                                        let json = format_state_json(&s);
-                                        drop(s);
-                                        if let Some(conn) = dbus_conn_clone.lock().await.as_ref() {
-                                            let _ = conn
-                                                .emit_signal(
-                                                    None::<()>,
-                                                    "/org/headbridge",
-                                                    "org.headbridge.Manager",
-                                                    "StateChanged",
-                                                    &(json,),
-                                                )
-                                                .await;
-                                        }
-                                    }
-                                }
-                            }
-
-                            println!("Sony MDR session ended for {}", expected_addr);
-                            *active_sony_session_clone.lock().await = None;
-                        });
-
-                        (true, format!("Connected to Sony {} ({})", name, address))
-                    }
-                    Err(_) => {
-                        // Fallback to basic BlueZ telemetry if RFCOMM channel connection fails
-                        let mut s = self.state.write().await;
-                        s.connected = true;
-                        s.connection_state = "connected".to_string();
-                        s.device_name = name.clone();
-                        s.vendor = "Sony".to_string();
-                        if let Some(p) = device.battery_percent {
-                            s.battery_percent = p as i32;
-                        }
-                        drop(s);
-                        *self.active_address.write().await = Some(address.clone());
-                        self.notify_state_changed().await;
-                        (true, format!("Connected to Sony {} ({})", name, address))
-                    }
-                }
             }
 
             DeviceVendor::Unknown => (
@@ -1286,6 +1805,10 @@ impl DeviceManager {
         }
     }
 
+    /// Runs the continuous background device management and monitoring loop.
+    ///
+    /// Periodically queries PipeWire / PulseAudio default sink, tracks BlueZ connection events,
+    /// establishes vendor control sessions for newly connected devices, and cleans up disconnected sessions.
     pub async fn run_monitoring_loop(self: Arc<Self>) {
         let mut interval = tokio::time::interval(Duration::from_millis(2500));
         loop {
@@ -1332,16 +1855,27 @@ impl DeviceManager {
                     // Check if the vendor control session has dropped while BlueZ link is still connected
                     let session_alive = match dev.vendor {
                         DeviceVendor::Apple => self.active_apple_session.lock().await.is_some(),
-                        DeviceVendor::Sony => self.active_sony_session.lock().await.is_some(),
                         DeviceVendor::BowersWilkins => self.active_bw_client.lock().await.is_some(),
                         _ => true,
                     };
                     if !session_alive {
-                        println!(
-                            "Vendor control session for {} ({}) dropped while Bluetooth connected — reconnecting...",
-                            dev.name, dev.address
-                        );
-                        self.connect_vendor_session(dev).await;
+                        let mut last_attempt = self.last_reconnect_attempt.lock().await;
+                        let now = std::time::Instant::now();
+                        let should_attempt = match *last_attempt {
+                            Some((ref a, ref t)) if a == &dev.address => {
+                                now.duration_since(*t) >= Duration::from_secs(15)
+                            }
+                            _ => true,
+                        };
+                        if should_attempt {
+                            *last_attempt = Some((dev.address.clone(), now));
+                            drop(last_attempt);
+                            println!(
+                                "Vendor control session for {} ({}) not active while Bluetooth connected — attempting connection...",
+                                dev.name, dev.address
+                            );
+                            self.connect_vendor_session(dev).await;
+                        }
                     }
                 }
                 (Some(addr), None) => {
@@ -1362,5 +1896,26 @@ impl DeviceManager {
 
         let () = proxy.call("Connect", &()).await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_set_equalizer_empty_args_queries_current() {
+        let state = Arc::new(RwLock::new(ResonateState::default()));
+        state.write().await.equalizer_preset = "Bass: +2 dB, Treble: -1 dB".to_string();
+        let handle = tokio::runtime::Handle::current();
+        let mgr = DeviceManager::new(state, handle);
+
+        let (ok, msg) = mgr.set_equalizer("").await;
+        assert!(ok);
+        assert_eq!(msg, "Equalizer: Bass: +2 dB, Treble: -1 dB");
+
+        let (ok_spaces, msg_spaces) = mgr.set_equalizer("   ").await;
+        assert!(ok_spaces);
+        assert_eq!(msg_spaces, "Equalizer: Bass: +2 dB, Treble: -1 dB");
     }
 }

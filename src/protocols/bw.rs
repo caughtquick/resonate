@@ -102,6 +102,20 @@ impl BWRPCatalog {
         BWRPCCommand::new(0x08, 0x0C, "Battery percentage");
     /// Query charging status.
     pub const CHARGING_STATUS_GET: BWRPCCommand = BWRPCCommand::new(0x08, 0x0B, "Charging status");
+    /// Query paired device list size.
+    pub const PAIRED_DEVICE_COUNT_GET: BWRPCCommand =
+        BWRPCCommand::new(0x05, 0x0B, "Paired device count");
+    /// Query paired device at index.
+    pub const PAIRED_DEVICE_GET: BWRPCCommand = BWRPCCommand::new(0x05, 0x04, "Paired device");
+    /// Request to connect a paired device at index.
+    pub const PAIRED_DEVICE_CONNECT: BWRPCCommand =
+        BWRPCCommand::new(0x05, 0x05, "Connect paired device");
+    /// Request to disconnect a paired device at index.
+    pub const PAIRED_DEVICE_DISCONNECT: BWRPCCommand =
+        BWRPCCommand::new(0x05, 0x06, "Disconnect paired device");
+    /// Remove / unpair a device at index.
+    pub const PAIRED_DEVICE_REMOVE: BWRPCCommand =
+        BWRPCCommand::new(0x05, 0x07, "Remove paired device");
 
     /// Resolves a namespace and command ID to its human-readable title.
     pub fn name(namespace: u8, id: u8) -> &'static str {
@@ -114,6 +128,11 @@ impl BWRPCatalog {
             (0x04, 0x18) => "Bass",
             (0x04, 0x19) => "Set treble",
             (0x04, 0x1A) => "Treble",
+            (0x05, 0x0B) => "Paired device count",
+            (0x05, 0x04) => "Paired device",
+            (0x05, 0x05) => "Connect paired device",
+            (0x05, 0x06) => "Disconnect paired device",
+            (0x05, 0x07) => "Remove paired device",
             (0x0A, 0x01) => "Wear sensor",
             (0x0A, 0x02) => "Set wear sensor",
             (0x0A, 0x03) => "Wear sensitivity",
@@ -283,9 +302,286 @@ impl BWRPC {
     }
 }
 
+/// Wire values of the ANC mode differ between Bowers & Wilkins hardware generations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BwAncWireProfile {
+    /// Hardware-verified on Px7 S3: off 0, noise cancellation 1, pass-through 2.
+    Standard,
+    /// Hardware-verified on original Px8 (RPC software `0(20.0.2.0)`) and
+    /// Px7 S2 / Px7 S2e: off 1, noise cancellation 2, pass-through 3.
+    /// The devices reject 0 with device error 6.
+    OriginalPx8,
+}
+
+impl BwAncWireProfile {
+    /// Resolves the wire profile from a device name or model name.
+    pub fn for_device_name(name: &str) -> Self {
+        let norm: String = name
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .collect::<String>()
+            .to_lowercase();
+        if norm.contains("px7s2")
+            || norm.contains("px7s2e")
+            || (norm.contains("px8") && !norm.contains("px8s2"))
+        {
+            Self::OriginalPx8
+        } else {
+            Self::Standard
+        }
+    }
+
+    /// Translates a normalized mode string ("off", "anc", "transparency") into the wire integer.
+    pub fn to_wire_value(&self, mode: &str) -> u8 {
+        match self {
+            Self::Standard => match mode {
+                "off" => 0,
+                "anc" | "nc" | "on" => 1,
+                "transparency" | "ambient" | "passthrough" => 2,
+                _ => 1,
+            },
+            Self::OriginalPx8 => match mode {
+                "off" => 1,
+                "anc" | "nc" | "on" => 2,
+                "transparency" | "ambient" | "passthrough" => 3,
+                _ => 2,
+            },
+        }
+    }
+
+    /// Translates a wire integer into a normalized mode string.
+    pub fn from_wire_value(&self, val: u8) -> &'static str {
+        match self {
+            Self::Standard => match val {
+                0 => "off",
+                1 => "anc",
+                2 => "transparency",
+                _ => "anc",
+            },
+            Self::OriginalPx8 => match val {
+                1 => "off",
+                2 => "anc",
+                3 => "transparency",
+                _ => "anc",
+            },
+        }
+    }
+}
+
+/// Converts decibel or tenth-decibel user input into B&W hardware wire values (-60 to +60).
+pub fn parse_bw_level(s: &str) -> Option<i32> {
+    let clean = s
+        .trim()
+        .trim_end_matches(|c: char| c.eq_ignore_ascii_case(&'d') || c.eq_ignore_ascii_case(&'b'))
+        .trim();
+    if let Ok(f) = clean.parse::<f64>() {
+        // Values within [-6.0, 6.0] are interpreted as decibels (scaled to tenths).
+        // Values outside [-6.0, 6.0] are interpreted as already in tenths of a dB.
+        let wire = if f.abs() <= 6.0 && f != 0.0 {
+            (f * 10.0).round() as i32
+        } else {
+            f.round() as i32
+        };
+        Some(wire.clamp(-60, 60))
+    } else {
+        None
+    }
+}
+
+/// Formats a wire level (-60 to +60) into a human-readable dB string (e.g. "+2 dB", "-1.5 dB", "0 dB").
+pub fn format_bw_db(val: i32) -> String {
+    if val == 0 {
+        "0 dB".to_string()
+    } else if val % 10 == 0 {
+        format!("{:+}", val / 10) + " dB"
+    } else {
+        format!("{:+.1} dB", val as f64 / 10.0)
+    }
+}
+
+/// Formats combined bass and treble tone controls into a human-readable string.
+pub fn format_bw_tone(bass: Option<i32>, treble: Option<i32>) -> String {
+    match (bass, treble) {
+        (Some(b), Some(t)) => format!("Bass: {}, Treble: {}", format_bw_db(b), format_bw_db(t)),
+        (Some(b), None) => format!("Bass: {}", format_bw_db(b)),
+        (None, Some(t)) => format!("Treble: {}", format_bw_db(t)),
+        (None, None) => "Flat (0 dB)".to_string(),
+    }
+}
+
+/// Formats 5-band equalizer gains into a human-readable string.
+pub fn format_bw_5band(bands: &[i32]) -> String {
+    let band_strs: Vec<String> = bands.iter().map(|&v| format_bw_db(v)).collect();
+    format!("[{}]", band_strs.join(", "))
+}
+
+/// A paired device reported by Bowers & Wilkins headphones over BWRPC.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BwPairedDevice {
+    /// Slot index in the headphone's paired device list.
+    pub id: usize,
+    /// Advertised or stored device name.
+    pub name: String,
+    /// Bluetooth MAC address formatted as `"XX:XX:XX:XX:XX:XX"`.
+    pub address: String,
+    /// Whether this paired device is currently connected to the headphone.
+    pub connected: bool,
+}
+
+/// Decodes a MessagePack payload from `PAIRED_DEVICE_GET` (0x05, 0x04) into a [`BwPairedDevice`].
+///
+/// B&W returns a MessagePack map containing:
+/// - Key 1 / "1": MAC address (array of integers or binary slice)
+/// - Key 2 / "2": Friendly device name (string)
+/// - Key 3 / "3": Multipoint connection status (boolean)
+pub fn decode_paired_device(index: usize, payload: &[u8]) -> Option<BwPairedDevice> {
+    use std::io::Cursor;
+    let mut cur = Cursor::new(payload);
+    let val = rmpv::decode::read_value(&mut cur).ok()?;
+    let map = val.as_map()?;
+
+    let mut mac_bytes: Option<Vec<u8>> = None;
+    let mut name: Option<String> = None;
+    let mut connected: Option<bool> = None;
+    let mut extracted_id: Option<usize> = None;
+
+    for (k, v) in map {
+        let key_id: Option<u64> = if let Some(i) = k.as_u64() {
+            Some(i)
+        } else if let Some(s) = k.as_str() {
+            s.parse::<u64>().ok()
+        } else {
+            None
+        };
+
+        match key_id {
+            Some(0) => {
+                if let Some(i) = v.as_u64() {
+                    extracted_id = Some(i as usize);
+                }
+            }
+            Some(1) => {
+                if let Some(arr) = v.as_array() {
+                    let bytes: Vec<u8> = arr
+                        .iter()
+                        .filter_map(|x| x.as_u64().map(|b| b as u8))
+                        .collect();
+                    mac_bytes = Some(bytes);
+                } else if let Some(bin) = v.as_slice() {
+                    mac_bytes = Some(bin.to_vec());
+                }
+            }
+            Some(2) => {
+                if let Some(s) = v.as_str() {
+                    let clean = s.trim_matches('\0').trim().to_string();
+                    name = Some(clean);
+                }
+            }
+            Some(3) => {
+                if let Some(b) = v.as_bool() {
+                    connected = Some(b);
+                } else if let Some(i) = v.as_u64() {
+                    connected = Some(i != 0);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let addr_str = if let Some(bytes) = mac_bytes
+        && bytes.len() >= 6
+    {
+        format!(
+            "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]
+        )
+    } else {
+        "00:00:00:00:00:00".to_string()
+    };
+
+    let final_id = extracted_id.unwrap_or(index);
+
+    Some(BwPairedDevice {
+        id: final_id,
+        name: name.unwrap_or_else(|| format!("Device {}", final_id)),
+        address: addr_str,
+        connected: connected.unwrap_or(false),
+    })
+}
+
+/// Extracts the paired device count from a `PAIRED_DEVICE_COUNT_GET` response message.
+pub fn parse_bw_paired_count(msg: &BWRPCMessage) -> Option<usize> {
+    msg.deserialize_payload::<usize>()
+        .and_then(|r| r.ok())
+        .or_else(|| {
+            msg.deserialize_payload::<u64>()
+                .and_then(|r| r.ok())
+                .map(|v| v as usize)
+        })
+        .or_else(|| {
+            msg.deserialize_payload::<u32>()
+                .and_then(|r| r.ok())
+                .map(|v| v as usize)
+        })
+        .or_else(|| {
+            msg.deserialize_payload::<u8>()
+                .and_then(|r| r.ok())
+                .map(|v| v as usize)
+        })
+        .or_else(|| {
+            if let Some(ref bytes) = msg.payload_bytes {
+                let mut cur = std::io::Cursor::new(bytes);
+                rmpv::decode::read_value(&mut cur)
+                    .ok()
+                    .and_then(|v| v.as_u64().map(|n| n as usize))
+            } else {
+                None
+            }
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_bw_anc_wire_profile_selection() {
+        assert_eq!(
+            BwAncWireProfile::for_device_name("Abhijit’s Px7 S2e"),
+            BwAncWireProfile::OriginalPx8
+        );
+        assert_eq!(
+            BwAncWireProfile::for_device_name("Px7 S2"),
+            BwAncWireProfile::OriginalPx8
+        );
+        assert_eq!(
+            BwAncWireProfile::for_device_name("Bowers & Wilkins Px8"),
+            BwAncWireProfile::OriginalPx8
+        );
+        assert_eq!(
+            BwAncWireProfile::for_device_name("Px7 S3"),
+            BwAncWireProfile::Standard
+        );
+    }
+
+    #[test]
+    fn test_bw_anc_wire_values() {
+        let p = BwAncWireProfile::OriginalPx8;
+        assert_eq!(p.to_wire_value("off"), 1);
+        assert_eq!(p.to_wire_value("anc"), 2);
+        assert_eq!(p.to_wire_value("transparency"), 3);
+        assert_eq!(p.from_wire_value(1), "off");
+        assert_eq!(p.from_wire_value(2), "anc");
+        assert_eq!(p.from_wire_value(3), "transparency");
+
+        let s = BwAncWireProfile::Standard;
+        assert_eq!(s.to_wire_value("off"), 0);
+        assert_eq!(s.to_wire_value("anc"), 1);
+        assert_eq!(s.to_wire_value("transparency"), 2);
+        assert_eq!(s.from_wire_value(0), "off");
+        assert_eq!(s.from_wire_value(1), "anc");
+        assert_eq!(s.from_wire_value(2), "transparency");
+    }
 
     #[test]
     fn test_bwrpc_request_without_payload() {
@@ -319,5 +615,138 @@ mod tests {
 
         let val: u8 = msg.deserialize_payload().unwrap().unwrap();
         assert_eq!(val, 2);
+    }
+
+    #[test]
+    fn test_bw_level_parsing_and_formatting() {
+        assert_eq!(parse_bw_level("2"), Some(20));
+        assert_eq!(parse_bw_level("+2"), Some(20));
+        assert_eq!(parse_bw_level("-1"), Some(-10));
+        assert_eq!(parse_bw_level("2.5"), Some(25));
+        assert_eq!(parse_bw_level("-1.5dB"), Some(-15));
+        assert_eq!(parse_bw_level("0"), Some(0));
+        assert_eq!(parse_bw_level("20"), Some(20));
+        assert_eq!(parse_bw_level("-10"), Some(-10));
+        assert_eq!(parse_bw_level("60"), Some(60));
+        assert_eq!(parse_bw_level("-60"), Some(-60));
+
+        assert_eq!(format_bw_db(20), "+2 dB");
+        assert_eq!(format_bw_db(-10), "-1 dB");
+        assert_eq!(format_bw_db(25), "+2.5 dB");
+        assert_eq!(format_bw_db(0), "0 dB");
+
+        assert_eq!(
+            format_bw_tone(Some(20), Some(-10)),
+            "Bass: +2 dB, Treble: -1 dB"
+        );
+        assert_eq!(
+            format_bw_5band(&[0, 10, 20, -10, 0]),
+            "[0 dB, +1 dB, +2 dB, -1 dB, 0 dB]"
+        );
+    }
+
+    #[test]
+    fn test_bw_5band_eq_request_and_response() {
+        let bands = vec![0i32, 10, 20, -10, 0];
+        let req = BWRPC::build_request(BWRPCatalog::EQ_SET, Some(&bands)).unwrap();
+        assert_eq!(req[1], 0x0B);
+        assert_eq!(req[2], 0x92);
+        assert_eq!(req[3], 0x29); // EQ_SET id
+        assert_eq!(req[4], 0x04); // namespace 0x04
+
+        // Simulated EQ_GET response with 5 bands
+        let payload = rmp_serde::to_vec(&bands).unwrap();
+        let mut raw = vec![0x0C, 0x92, 0x2A, 0x04, 0x00, 0x00];
+        let len = payload.len() as u16;
+        raw.push((len & 0xFF) as u8);
+        raw.push(((len >> 8) & 0xFF) as u8);
+        raw.extend_from_slice(&payload);
+
+        let msg = BWRPC::decode(&raw).unwrap();
+        assert!(msg.succeeded());
+        assert_eq!(msg.command.id, 0x2A);
+        assert_eq!(msg.command.namespace, 0x04);
+        let decoded_bands: Vec<i32> = msg.deserialize_payload().unwrap().unwrap();
+        assert_eq!(decoded_bands, bands);
+    }
+
+    #[test]
+    fn test_decode_paired_device_string_keys() {
+        use std::collections::BTreeMap;
+        // Test map with string keys
+        let mut map: BTreeMap<String, rmpv::Value> = BTreeMap::new();
+        map.insert(
+            "1".to_string(),
+            rmpv::Value::Array(vec![
+                rmpv::Value::Integer(0xEC.into()),
+                rmpv::Value::Integer(0x66.into()),
+                rmpv::Value::Integer(0xD1.into()),
+                rmpv::Value::Integer(0xBE.into()),
+                rmpv::Value::Integer(0x1D.into()),
+                rmpv::Value::Integer(0x80.into()),
+            ]),
+        );
+        map.insert("2".to_string(), rmpv::Value::String("MacBook Pro".into()));
+        map.insert("3".to_string(), rmpv::Value::Boolean(true));
+
+        let payload = rmp_serde::to_vec(&map).unwrap();
+        let dev = decode_paired_device(0, &payload).expect("should decode paired device");
+        assert_eq!(dev.id, 0);
+        assert_eq!(dev.name, "MacBook Pro");
+        assert_eq!(dev.address, "EC:66:D1:BE:1D:80");
+        assert!(dev.connected);
+    }
+
+    #[test]
+    fn test_decode_paired_device_int_keys() {
+        use std::collections::BTreeMap;
+        // Test map with integer keys and binary MAC address
+        let mut map: BTreeMap<u8, rmpv::Value> = BTreeMap::new();
+        map.insert(
+            1,
+            rmpv::Value::Binary(vec![0x30, 0xE3, 0xA4, 0x86, 0x67, 0xF2]),
+        );
+        map.insert(2, rmpv::Value::String("papaya".into()));
+        map.insert(3, rmpv::Value::Boolean(false));
+
+        let payload = rmp_serde::to_vec(&map).unwrap();
+        let dev = decode_paired_device(1, &payload).expect("should decode paired device");
+        assert_eq!(dev.id, 1);
+        assert_eq!(dev.name, "papaya");
+        assert_eq!(dev.address, "30:E3:A4:86:67:F2");
+        assert!(!dev.connected);
+    }
+
+    #[test]
+    fn test_bwrpc_paired_device_connect_disconnect_and_wear_sensitivity() {
+        assert_eq!(BWRPCatalog::PAIRED_DEVICE_CONNECT.namespace, 0x05);
+        assert_eq!(BWRPCatalog::PAIRED_DEVICE_CONNECT.id, 0x05);
+        assert_eq!(BWRPCatalog::PAIRED_DEVICE_DISCONNECT.namespace, 0x05);
+        assert_eq!(BWRPCatalog::PAIRED_DEVICE_DISCONNECT.id, 0x06);
+        assert_eq!(BWRPCatalog::WEAR_SENSITIVITY_GET.namespace, 0x0A);
+        assert_eq!(BWRPCatalog::WEAR_SENSITIVITY_GET.id, 0x03);
+        assert_eq!(BWRPCatalog::WEAR_SENSITIVITY_SET.namespace, 0x0A);
+        assert_eq!(BWRPCatalog::WEAR_SENSITIVITY_SET.id, 0x04);
+
+        let req_connect =
+            BWRPC::build_request(BWRPCatalog::PAIRED_DEVICE_CONNECT, Some(&1u8)).unwrap();
+        assert_eq!(req_connect[1], 0x0B);
+        assert_eq!(req_connect[2], 0x92);
+        assert_eq!(req_connect[3], 0x05);
+        assert_eq!(req_connect[4], 0x05);
+
+        let req_disconnect =
+            BWRPC::build_request(BWRPCatalog::PAIRED_DEVICE_DISCONNECT, Some(&2u8)).unwrap();
+        assert_eq!(req_disconnect[1], 0x0B);
+        assert_eq!(req_disconnect[2], 0x92);
+        assert_eq!(req_disconnect[3], 0x06);
+        assert_eq!(req_disconnect[4], 0x05);
+
+        let req_wear_sens =
+            BWRPC::build_request(BWRPCatalog::WEAR_SENSITIVITY_SET, Some(&2u8)).unwrap();
+        assert_eq!(req_wear_sens[1], 0x0B);
+        assert_eq!(req_wear_sens[2], 0x92);
+        assert_eq!(req_wear_sens[3], 0x04);
+        assert_eq!(req_wear_sens[4], 0x0A);
     }
 }

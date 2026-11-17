@@ -1,0 +1,67 @@
+import { Theme } from "../theme.slint";
+
+export component AncModeCard inherits Rectangle {
+    in property <string> mode_id: "off";
+    in property <string> title: "Off";
+    in property <string> description: "Passive isolation";
+    in property <bool> is_active: false;
+    callback clicked();
+
+    background: is_active ? Theme.accent_subtle : (touch.has_hover ? Theme.bg_card_hover : Theme.bg_card);
+    border-radius: Theme.radius_md;
+    border-width: is_active ? 2px : 1px;
+    border-color: is_active ? Theme.accent : Theme.border;
+    min-height: 80px;
+
+    animate background { duration: 150ms; }
+    animate border-color { duration: 150ms; }
+
+    HorizontalLayout {
+        padding: 14px;
+        spacing: 12px;
+        alignment: start;
+
+        // Mode icon pill
+        Rectangle {
+            width: 40px;
+            height: 40px;
+            border-radius: Theme.radius_md;
+            background: root.is_active ? Theme.accent : Theme.bg_input;
+
+            Image {
+                source: root.mode_id == "off" ? @image-url("../../assets/icons/anc-off.svg") :
+                        (root.mode_id == "anc" ? @image-url("../../assets/icons/anc-on.svg") :
+                        (root.mode_id == "ambient" ? @image-url("../../assets/icons/anc-transparency.svg") :
+                        (root.mode_id == "adaptive" ? @image-url("../../assets/icons/anc-adaptive.svg") :
+                        @image-url("../../assets/icons/anc-wind.svg"))));
+                width: 18px;
+                height: 18px;
+                colorize: root.is_active ? #ffffff : Theme.text_secondary;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+
+            Text {
+                text: root.title;
+                color: root.is_active ? Theme.text_primary : Theme.text_secondary;
+                font-size: 13px;
+                font-weight: 600;
+            }
+
+            Text {
+                text: root.description;
+                color: Theme.text_muted;
+                font-size: 11px;
+            }
+        }
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}

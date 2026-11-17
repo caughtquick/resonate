@@ -1,0 +1,263 @@
+import { Theme } from "../theme.slint";
+import { Slider } from "std-widgets.slint";
+
+export component EqualizerStudio inherits Rectangle {
+    in-out property <float> bass_db: 0.0;
+    in-out property <float> treble_db: 0.0;
+    in property <bool> is_connected_bw: true;
+    callback eq_changed(float, float);
+    callback preset_applied(string);
+
+    background: Theme.bg_card;
+    border-radius: Theme.radius_lg;
+    border-width: 1px;
+    border-color: Theme.border;
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 20px;
+
+        // Visual Curve Display Box
+        Rectangle {
+            height: 160px;
+            background: Theme.bg_darkest;
+            border-radius: Theme.radius_md;
+            border-width: 1px;
+            border-color: Theme.border;
+
+            // Zero line
+            Rectangle {
+                y: parent.height / 2;
+                height: 1px;
+                width: parent.width;
+                background: #33415555;
+            }
+
+            // Curve endpoints and center representation
+            Path {
+                width: parent.width;
+                height: parent.height;
+
+                property <float> w: parent.width / 1px;
+                property <float> h: parent.height / 1px;
+                property <float> mid_y: h / 2.0;
+                property <float> bass_y: mid_y - (root.bass_db / 6.0) * (mid_y * 0.7);
+                property <float> treble_y: mid_y - (root.treble_db / 6.0) * (mid_y * 0.7);
+
+                MoveTo { x: 0; y: bass_y; }
+                CubicTo {
+                    control_1_x: w * 0.35;
+                    control_1_y: bass_y;
+                    control_2_x: w * 0.65;
+                    control_2_y: treble_y;
+                    x: w;
+                    y: treble_y;
+                }
+
+                stroke: Theme.accent;
+                stroke-width: 3px;
+            }
+
+            // Scale labels
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                alignment: space-between;
+                y: 10px;
+
+                Text {
+                    text: "Bass (100 Hz): " + (root.bass_db >= 0 ? "+" : "") + Math.round(root.bass_db * 10) / 10 + " dB";
+                    color: Theme.accent_hover;
+                    font-size: 12px;
+                    font-weight: 600;
+                }
+
+                Text {
+                    text: "Treble (10 kHz): " + (root.treble_db >= 0 ? "+" : "") + Math.round(root.treble_db * 10) / 10 + " dB";
+                    color: Theme.accent_purple;
+                    font-size: 12px;
+                    font-weight: 600;
+                }
+            }
+        }
+
+        // Sliders Section
+        HorizontalLayout {
+            spacing: 30px;
+
+            // Bass control
+            VerticalLayout {
+                spacing: 8px;
+
+                HorizontalLayout {
+                    alignment: space-between;
+                    Text {
+                        text: "Bass";
+                        color: Theme.text_primary;
+                        font-size: 14px;
+                        font-weight: 600;
+                    }
+                    Text {
+                        text: (root.bass_db >= 0 ? "+" : "") + Math.round(root.bass_db * 10) / 10 + " dB";
+                        color: Theme.text_secondary;
+                        font-size: 13px;
+                    }
+                }
+
+                Slider {
+                    minimum: -6.0;
+                    maximum: 6.0;
+                    value <=> root.bass_db;
+                    enabled: root.is_connected_bw;
+                    changed(val) => {
+                        root.eq_changed(val, root.treble_db);
+                    }
+                }
+            }
+
+            // Treble control
+            VerticalLayout {
+                spacing: 8px;
+
+                HorizontalLayout {
+                    alignment: space-between;
+                    Text {
+                        text: "Treble";
+                        color: Theme.text_primary;
+                        font-size: 14px;
+                        font-weight: 600;
+                    }
+                    Text {
+                        text: (root.treble_db >= 0 ? "+" : "") + Math.round(root.treble_db * 10) / 10 + " dB";
+                        color: Theme.text_secondary;
+                        font-size: 13px;
+                    }
+                }
+
+                Slider {
+                    minimum: -6.0;
+                    maximum: 6.0;
+                    value <=> root.treble_db;
+                    enabled: root.is_connected_bw;
+                    changed(val) => {
+                        root.eq_changed(root.bass_db, val);
+                    }
+                }
+            }
+        }
+
+        // Preset Pills
+        HorizontalLayout {
+            spacing: 10px;
+            alignment: center;
+
+            Rectangle {
+                border-radius: Theme.radius_pill;
+                background: Theme.bg_input;
+                border-width: 1px;
+                border-color: Theme.border;
+                height: 32px;
+
+                HorizontalLayout {
+                    padding-left: 14px;
+                    padding-right: 14px;
+                    Text {
+                        text: "Flat (Reset)";
+                        color: Theme.text_secondary;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                }
+
+                TouchArea {
+                    clicked => {
+                        root.bass_db = 0.0;
+                        root.treble_db = 0.0;
+                        root.preset_applied("flat");
+                    }
+                }
+            }
+
+            Rectangle {
+                border-radius: Theme.radius_pill;
+                background: Theme.bg_input;
+                border-width: 1px;
+                border-color: Theme.border;
+                height: 32px;
+
+                HorizontalLayout {
+                    padding-left: 14px;
+                    padding-right: 14px;
+                    Text {
+                        text: "Bass Boost (+4 dB)";
+                        color: Theme.text_secondary;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                }
+
+                TouchArea {
+                    clicked => {
+                        root.bass_db = 4.0;
+                        root.treble_db = 0.0;
+                        root.preset_applied("bass_boost");
+                    }
+                }
+            }
+
+            Rectangle {
+                border-radius: Theme.radius_pill;
+                background: Theme.bg_input;
+                border-width: 1px;
+                border-color: Theme.border;
+                height: 32px;
+
+                HorizontalLayout {
+                    padding-left: 14px;
+                    padding-right: 14px;
+                    Text {
+                        text: "Vocal (+1 / +3 dB)";
+                        color: Theme.text_secondary;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                }
+
+                TouchArea {
+                    clicked => {
+                        root.bass_db = 1.0;
+                        root.treble_db = 3.0;
+                        root.preset_applied("vocal");
+                    }
+                }
+            }
+
+            Rectangle {
+                border-radius: Theme.radius_pill;
+                background: Theme.bg_input;
+                border-width: 1px;
+                border-color: Theme.border;
+                height: 32px;
+
+                HorizontalLayout {
+                    padding-left: 14px;
+                    padding-right: 14px;
+                    Text {
+                        text: "Treble Boost (+4 dB)";
+                        color: Theme.text_secondary;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                }
+
+                TouchArea {
+                    clicked => {
+                        root.bass_db = 0.0;
+                        root.treble_db = 4.0;
+                        root.preset_applied("treble_boost");
+                    }
+                }
+            }
+        }
+    }
+}

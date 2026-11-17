@@ -10,7 +10,7 @@ use clap::{Parser, Subcommand};
 #[derive(Parser, Debug)]
 #[command(
     name = "resonate",
-    about = "Native Linux Bluetooth headphone control for AirPods, Sony MDR, and Bowers & Wilkins",
+    about = "Native Linux Bluetooth headphone control for AirPods and Bowers & Wilkins",
     version
 )]
 pub struct Cli {
@@ -47,9 +47,18 @@ pub enum Commands {
         format: String,
     },
 
-    /// List paired AirPods, Beats, Bowers & Wilkins, and Sony devices.
-    #[command(about = "List paired AirPods, Beats, Bowers & Wilkins, and Sony devices")]
+    /// List paired AirPods, Beats, and Bowers & Wilkins devices.
+    #[command(about = "List paired AirPods, Beats, and Bowers & Wilkins devices")]
     Devices,
+
+    /// List or manage multipoint paired devices (list, connect <target>, disconnect <target>).
+    #[command(about = "List or manage multipoint paired devices")]
+    Multipoint {
+        /// Action: "list", "connect", or "disconnect"
+        action: Option<String>,
+        /// Target device (slot index, name substring, or MAC address)
+        target: Option<String>,
+    },
 
     /// Connect to headphone by name or Bluetooth MAC address.
     #[command(about = "Connect to headphone by name or Bluetooth MAC address")]
@@ -71,24 +80,18 @@ pub enum Commands {
         mode: Option<String>,
     },
 
-    /// Get or set Sony ambient sound level (0-20).
-    #[command(about = "Get or set Sony ambient sound level (0-20)")]
-    AmbientLevel {
-        /// Ambient transparency level from 0 to 20.
-        level: Option<i32>,
-    },
-
-    /// Get or set equalizer presets (Sony) or tone controls (B&W).
-    #[command(about = "Get or set equalizer presets (Sony) or tone controls (B&W)")]
+    /// Get or set tone controls or equalizer (B&W).
+    #[command(about = "Get or set tone controls or equalizer (B&W)")]
     Eq {
         /// Equalizer arguments (preset name or bass/treble values).
+        #[arg(allow_hyphen_values = true)]
         args: Vec<String>,
     },
 
-    /// Get or set in-ear / wear detection (Apple, B&W).
-    #[command(about = "Get or set in-ear / wear detection (Apple, B&W)")]
+    /// Get or set in-ear / wear detection and sensitivity (on, off, low, medium, high).
+    #[command(about = "Get or set in-ear / wear detection and sensitivity")]
     WearSensor {
-        /// Action (`"on"`, `"off"`, `"enable"`, `"disable"`).
+        /// Action (`"on"`, `"off"`, `"low"`, `"medium"`, `"high"`, or omit to inspect).
         action: Option<String>,
     },
 
@@ -127,8 +130,8 @@ pub enum Commands {
         volume: Option<u8>,
     },
 
-    /// Get or set standby / auto-power off timer (B&W, Sony).
-    #[command(about = "Get or set standby / auto-power off timer (B&W, Sony)")]
+    /// Get or set standby / auto-power off timer (B&W).
+    #[command(about = "Get or set standby / auto-power off timer (B&W)")]
     Standby {
         /// Standby timeout value in minutes or preset name.
         val: Option<String>,
@@ -138,27 +141,6 @@ pub enum Commands {
     #[command(about = "Remap action button function (B&W: anc, voice)")]
     Button {
         /// Action button mapping (`"anc"`, `"voice"`).
-        action: Option<String>,
-    },
-
-    /// Enable or disable touch sensor control panel (Sony: on, off).
-    #[command(about = "Enable or disable touch sensor control panel (Sony: on, off)")]
-    Touch {
-        /// Action (`"on"`, `"off"`).
-        action: Option<String>,
-    },
-
-    /// Enable or disable DSEE audio enhancement (Sony: on, off).
-    #[command(about = "Enable or disable DSEE audio enhancement (Sony: on, off)")]
-    Dsee {
-        /// Action (`"on"`, `"off"`).
-        action: Option<String>,
-    },
-
-    /// Run NC and atmospheric pressure calibration (Sony: start, stop, status).
-    #[command(about = "Run NC and atmospheric pressure calibration (Sony: start, stop, status)")]
-    Optimize {
-        /// Optimizer command (`"start"`, `"stop"`, `"status"`).
         action: Option<String>,
     },
 

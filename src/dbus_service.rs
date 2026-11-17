@@ -16,7 +16,7 @@
 //!     `IsCharging` (b), `NoiseMode` (s), `EarDetection` (b), `AutoPause` (b),
 //!     `InEar` (b), `InEarPrimary` (s), `InEarSecondary` (s), `ConversationAwareness` (b),
 //!     `MicrophoneMode` (s), `OneBudAnc` (b), `ChimeVolume` (i), `StandbyMinutes` (i),
-//!     `TouchSensor` (b), `Dsee` (b), `EqualizerPreset` (s), `AudioSink` (s).
+//!     `EqualizerPreset` (s), `AudioSink` (s).
 
 use std::sync::Arc;
 use zbus::interface;
@@ -32,7 +32,7 @@ pub struct ResonateState {
     pub connection_state: String,
     /// Friendly product or alias name of the active device.
     pub device_name: String,
-    /// Hardware manufacturer name (`"Apple"`, `"Sony"`, `"Bowers & Wilkins"`, or `"Unknown"`).
+    /// Hardware manufacturer name (`"Apple"`, `"Bowers & Wilkins"`, or `"Unknown"`).
     pub vendor: String,
     /// Overall or single battery percentage (-1 if unavailable).
     pub battery_percent: i32,
@@ -66,14 +66,12 @@ pub struct ResonateState {
     pub chime_volume: i32,
     /// Auto-power off timeout in minutes (0 = disabled).
     pub standby_minutes: i32,
-    /// Whether touch sensor controls are active (Sony).
-    pub touch_sensor: bool,
-    /// Whether DSEE audio upscaling is active (Sony).
-    pub dsee: bool,
     /// Current equalizer preset name or settings string.
     pub equalizer_preset: String,
     /// Current Linux default audio sink name (e.g. `"bluez_output.6C_12_70_3F_8E_AE.a2dp-sink"`).
     pub audio_sink: String,
+    /// Wear sensor sensitivity level for Bowers & Wilkins (0 = Low, 1 = Normal/Medium, 2 = High, -1 if unavailable).
+    pub wear_sensitivity: i32,
 }
 
 /// D-Bus interface implementation for `org.headbridge.Manager`.
@@ -210,19 +208,7 @@ impl ResonateDbusManager {
         self.manager.state.read().await.standby_minutes
     }
 
-    /// Touch sensor panel toggle (Sony).
-    #[zbus(property)]
-    async fn touch_sensor(&self) -> bool {
-        self.manager.state.read().await.touch_sensor
-    }
-
-    /// DSEE audio enhancement toggle (Sony).
-    #[zbus(property)]
-    async fn dsee(&self) -> bool {
-        self.manager.state.read().await.dsee
-    }
-
-    /// Current equalizer preset name (Sony).
+    /// Current equalizer preset or tone controls string.
     #[zbus(property)]
     async fn equalizer_preset(&self) -> String {
         self.manager.state.read().await.equalizer_preset.clone()
@@ -232,6 +218,12 @@ impl ResonateDbusManager {
     #[zbus(property)]
     async fn audio_sink(&self) -> String {
         self.manager.state.read().await.audio_sink.clone()
+    }
+
+    /// Wear sensor sensitivity level for Bowers & Wilkins (0 = Low, 1 = Normal/Medium, 2 = High, -1 if unavailable).
+    #[zbus(property)]
+    async fn wear_sensitivity(&self) -> i32 {
+        self.manager.state.read().await.wear_sensitivity
     }
 
     /// Returns the full runtime status serialized as a JSON string.
@@ -247,6 +239,36 @@ impl ResonateDbusManager {
             .spawn(async move { mgr.list_devices_json().await })
             .await
             .unwrap_or_else(|_| "[]".to_string())
+    }
+
+    /// Returns the multipoint paired devices list as a JSON string and success flag.
+    async fn get_multipoint(&self) -> (bool, String) {
+        let mgr = self.manager.clone();
+        self.manager
+            .handle
+            .spawn(async move { mgr.get_multipoint().await })
+            .await
+            .unwrap_or_else(|e| (false, format!("Tokio runtime spawn error: {}", e)))
+    }
+
+    /// Connects a paired multipoint device by index, MAC address, or name substring.
+    async fn connect_multipoint(&self, target: String) -> (bool, String) {
+        let mgr = self.manager.clone();
+        self.manager
+            .handle
+            .spawn(async move { mgr.connect_multipoint(&target).await })
+            .await
+            .unwrap_or_else(|e| (false, format!("Tokio runtime spawn error: {}", e)))
+    }
+
+    /// Disconnects a paired multipoint device by index, MAC address, or name substring.
+    async fn disconnect_multipoint(&self, target: String) -> (bool, String) {
+        let mgr = self.manager.clone();
+        self.manager
+            .handle
+            .spawn(async move { mgr.disconnect_multipoint(&target).await })
+            .await
+            .unwrap_or_else(|e| (false, format!("Tokio runtime spawn error: {}", e)))
     }
 
     /// Connects to a headphone by name or Bluetooth MAC address.
@@ -279,16 +301,6 @@ impl ResonateDbusManager {
             .unwrap_or_else(|e| (false, format!("Tokio runtime spawn error: {}", e)))
     }
 
-    /// Sets the ambient sound level on Sony headphones (0-20).
-    async fn set_ambient_level(&self, level: i32) -> bool {
-        let mgr = self.manager.clone();
-        self.manager
-            .handle
-            .spawn(async move { mgr.set_ambient_level(level).await })
-            .await
-            .unwrap_or(false)
-    }
-
     /// Sets equalizer preset or custom gains.
     async fn set_equalizer(&self, args: String) -> (bool, String) {
         let mgr = self.manager.clone();
@@ -307,6 +319,16 @@ impl ResonateDbusManager {
             .spawn(async move { mgr.set_ear_detection(enable).await })
             .await
             .unwrap_or(false)
+    }
+
+    /// Configures wear sensor state or sensitivity via action string ("on", "off", "low", "medium", "high").
+    async fn set_wear_sensor_string(&self, action: String) -> (bool, String) {
+        let mgr = self.manager.clone();
+        self.manager
+            .handle
+            .spawn(async move { mgr.set_wear_sensor_string(&action).await })
+            .await
+            .unwrap_or_else(|e| (false, format!("Tokio runtime spawn error: {}", e)))
     }
 
     /// Enables or disables smart auto-pause.
@@ -364,27 +386,7 @@ impl ResonateDbusManager {
             .unwrap_or(false)
     }
 
-    /// Enables or disables the touch sensor control panel (Sony).
-    async fn set_touch_sensor(&self, enable: bool) -> bool {
-        let mgr = self.manager.clone();
-        self.manager
-            .handle
-            .spawn(async move { mgr.set_touch_sensor(enable).await })
-            .await
-            .unwrap_or(false)
-    }
-
-    /// Enables or disables DSEE audio upscaling (Sony).
-    async fn set_dsee(&self, enable: bool) -> bool {
-        let mgr = self.manager.clone();
-        self.manager
-            .handle
-            .spawn(async move { mgr.set_dsee(enable).await })
-            .await
-            .unwrap_or(false)
-    }
-
-    /// Configures auto-standby timer (Sony, B&W).
+    /// Configures auto-standby timer (B&W).
     async fn set_standby(&self, val: String) -> bool {
         let mgr = self.manager.clone();
         self.manager
@@ -400,16 +402,6 @@ impl ResonateDbusManager {
         self.manager
             .handle
             .spawn(async move { mgr.set_action_button(&action).await })
-            .await
-            .unwrap_or_else(|e| (false, format!("Error: {}", e)))
-    }
-
-    /// Starts or checks NC and atmospheric pressure calibration (Sony).
-    async fn optimize(&self, action: String) -> (bool, String) {
-        let mgr = self.manager.clone();
-        self.manager
-            .handle
-            .spawn(async move { mgr.optimize(&action).await })
             .await
             .unwrap_or_else(|e| (false, format!("Error: {}", e)))
     }

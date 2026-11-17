@@ -157,6 +157,7 @@ WantedBy=default.target
                 battery_left: -1,
                 battery_right: -1,
                 battery_case: -1,
+                wear_sensitivity: -1,
                 noise_mode: "off".to_string(),
                 auto_pause: initial_settings.data.auto_pause_enabled,
                 ..Default::default()
@@ -273,7 +274,7 @@ WantedBy=default.target
                 println!("=== Paired Bluetooth Headphones ===");
                 let supported: Vec<_> = devices.iter().filter(|d| d.is_supported()).collect();
                 if supported.is_empty() {
-                    println!("No supported AirPods, Bowers & Wilkins, or Sony headphones found.");
+                    println!("No supported AirPods or Bowers & Wilkins headphones found.");
                     println!("Ensure Bluetooth is turned on and your device is paired.");
                 } else {
                     for d in supported {
@@ -286,6 +287,119 @@ WantedBy=default.target
                     }
                 }
             }
+        }
+
+        Commands::Multipoint { action, target } => {
+            if let Ok(conn) = zbus::Connection::session().await
+                && let Ok(proxy) = zbus::Proxy::new(
+                    &conn,
+                    "org.headbridge",
+                    "/org/headbridge",
+                    "org.headbridge.Manager",
+                )
+                .await
+            {
+                let act = action.as_deref().unwrap_or("list").to_lowercase();
+                match act.as_str() {
+                    "connect" => {
+                        let tgt = match target {
+                            Some(t) if !t.trim().is_empty() => t,
+                            _ => {
+                                eprintln!("Usage: resonate multipoint connect <index|mac|name>");
+                                std::process::exit(1);
+                            }
+                        };
+                        let res: Result<(bool, String), _> =
+                            proxy.call("ConnectMultipoint", &(tgt,)).await;
+                        match res {
+                            Ok((true, msg)) => println!("{}", msg),
+                            Ok((false, msg)) => {
+                                eprintln!("{}", msg);
+                                std::process::exit(1);
+                            }
+                            Err(e) => {
+                                eprintln!("D-Bus call ConnectMultipoint failed: {}", e);
+                                std::process::exit(1);
+                            }
+                        }
+                    }
+                    "disconnect" => {
+                        let tgt = match target {
+                            Some(t) if !t.trim().is_empty() => t,
+                            _ => {
+                                eprintln!("Usage: resonate multipoint disconnect <index|mac|name>");
+                                std::process::exit(1);
+                            }
+                        };
+                        let res: Result<(bool, String), _> =
+                            proxy.call("DisconnectMultipoint", &(tgt,)).await;
+                        match res {
+                            Ok((true, msg)) => println!("{}", msg),
+                            Ok((false, msg)) => {
+                                eprintln!("{}", msg);
+                                std::process::exit(1);
+                            }
+                            Err(e) => {
+                                eprintln!("D-Bus call DisconnectMultipoint failed: {}", e);
+                                std::process::exit(1);
+                            }
+                        }
+                    }
+                    "list" => {
+                        let res: Result<(bool, String), _> = proxy.call("GetMultipoint", &()).await;
+                        match res {
+                            Ok((true, json_str)) => {
+                                if cli.json {
+                                    if let Ok(val) =
+                                        serde_json::from_str::<serde_json::Value>(&json_str)
+                                    {
+                                        println!(
+                                            "{}",
+                                            serde_json::to_string_pretty(&val).unwrap_or(json_str)
+                                        );
+                                    } else {
+                                        println!("{}", json_str);
+                                    }
+                                } else {
+                                    println!("=== Multipoint Paired Devices ===");
+                                    let devices: Vec<resonate::protocols::bw::BwPairedDevice> =
+                                        serde_json::from_str(&json_str).unwrap_or_default();
+                                    if devices.is_empty() {
+                                        println!("No multipoint paired devices reported.");
+                                    } else {
+                                        for dev in devices {
+                                            let status = if dev.connected {
+                                                "[Connected]"
+                                            } else {
+                                                "[Paired]"
+                                            };
+                                            println!(
+                                                " - [{}] {} ({}) {}",
+                                                dev.id, dev.name, dev.address, status
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            Ok((false, err_msg)) => {
+                                eprintln!("Multipoint query failed: {}", err_msg);
+                            }
+                            Err(e) => {
+                                eprintln!("Multipoint D-Bus call failed: {}", e);
+                            }
+                        }
+                    }
+                    other => {
+                        eprintln!(
+                            "Unknown multipoint action '{}'. Usage: resonate multipoint [list|connect <target>|disconnect <target>]",
+                            other
+                        );
+                        std::process::exit(1);
+                    }
+                }
+                return Ok(());
+            }
+            eprintln!("Resonate daemon is not running.");
         }
 
         Commands::Connect { target } => {
@@ -410,6 +524,11 @@ WantedBy=default.target
                                     "ANC Mode:    {}",
                                     val["noiseMode"].as_str().unwrap_or("")
                                 );
+                                if let Some(eq) = val["equalizerPreset"].as_str()
+                                    && !eq.is_empty()
+                                {
+                                    println!("Equalizer:   {}", eq);
+                                }
                                 if let Some(in_ear) = val["inEar"].as_bool() {
                                     println!(
                                         "In-Ear:      {}",
@@ -596,16 +715,92 @@ WantedBy=default.target
                 )
                 .await
             {
-                let enable = match action.as_deref() {
-                    Some("on") | Some("enable") | Some("true") | Some("1") => true,
-                    Some("off") | Some("disable") | Some("false") | Some("0") => false,
-                    _ => true,
-                };
-                let res: Result<bool, _> = proxy.call("SetWearSensor", &(enable,)).await;
-                if let Ok(true) = res {
-                    println!("Wear / in-ear detection set to: {}", enable);
+                if let Some(act) = action {
+                    let res: Result<(bool, String), _> =
+                        proxy.call("SetWearSensorString", &(act.clone(),)).await;
+                    match res {
+                        Ok((true, msg)) => println!("{}", msg),
+                        Ok((false, msg)) => {
+                            eprintln!("{}", msg);
+                            std::process::exit(1);
+                        }
+                        Err(_) => {
+                            // Fallback to legacy boolean SetWearSensor
+                            let enable = match act.to_lowercase().as_str() {
+                                "on" | "enable" | "true" | "1" => true,
+                                "off" | "disable" | "false" | "0" => false,
+                                _ => true,
+                            };
+                            let legacy: Result<bool, _> =
+                                proxy.call("SetWearSensor", &(enable,)).await;
+                            if let Ok(true) = legacy {
+                                println!("Wear / in-ear detection set to: {}", enable);
+                            } else {
+                                eprintln!("Failed to set wear sensor.");
+                                std::process::exit(1);
+                            }
+                        }
+                    }
                 } else {
-                    eprintln!("Failed to set wear sensor.");
+                    // Inspect current wear status
+                    let status_res: Result<String, _> = proxy.call("GetStatus", &()).await;
+                    match status_res {
+                        Ok(json_str) => {
+                            if cli.json {
+                                println!("{}", json_str);
+                            } else if let Ok(val) =
+                                serde_json::from_str::<serde_json::Value>(&json_str)
+                            {
+                                println!("=== Wear Sensor Status ===");
+                                let enabled = val
+                                    .get("earDetection")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false);
+                                println!(
+                                    "Wear Detection: {}",
+                                    if enabled { "Enabled" } else { "Disabled" }
+                                );
+
+                                let in_ear =
+                                    val.get("inEar").and_then(|v| v.as_bool()).unwrap_or(false);
+                                println!(
+                                    "Currently Worn: {}",
+                                    if in_ear { "Yes" } else { "No" }
+                                );
+
+                                if let Some(sens) =
+                                    val.get("wearSensitivity").and_then(|v| v.as_i64())
+                                {
+                                    let sens_str = match sens {
+                                        0 => "Low",
+                                        1 => "Normal / Medium",
+                                        2 => "High",
+                                        _ => "Unknown",
+                                    };
+                                    println!("Sensitivity:    {}", sens_str);
+                                }
+
+                                let primary = val
+                                    .get("inEarPrimary")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                let secondary = val
+                                    .get("inEarSecondary")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                if !primary.is_empty() || !secondary.is_empty() {
+                                    println!("Left Earbud:    {}", primary);
+                                    println!("Right Earbud:   {}", secondary);
+                                }
+                            } else {
+                                println!("{}", json_str);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to query wear sensor status: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
                 }
                 return Ok(());
             }
@@ -749,28 +944,6 @@ WantedBy=default.target
             eprintln!("Resonate daemon is not running.");
         }
 
-        Commands::AmbientLevel { level } => {
-            if let Ok(conn) = zbus::Connection::session().await
-                && let Ok(proxy) = zbus::Proxy::new(
-                    &conn,
-                    "org.headbridge",
-                    "/org/headbridge",
-                    "org.headbridge.Manager",
-                )
-                .await
-            {
-                let lvl = level.unwrap_or(10);
-                let res: Result<bool, _> = proxy.call("SetAmbientLevel", &(lvl,)).await;
-                if let Ok(true) = res {
-                    println!("Ambient sound level set to: {}", lvl);
-                } else {
-                    eprintln!("Failed to set ambient level.");
-                }
-                return Ok(());
-            }
-            eprintln!("Resonate daemon is not running.");
-        }
-
         Commands::Eq { args } => {
             if let Ok(conn) = zbus::Connection::session().await
                 && let Ok(proxy) = zbus::Proxy::new(
@@ -781,6 +954,16 @@ WantedBy=default.target
                 )
                 .await
             {
+                if args.is_empty() {
+                    let res: Result<String, _> = proxy.get_property("EqualizerPreset").await;
+                    match res {
+                        Ok(current) if !current.is_empty() => {
+                            println!("Current equalizer: {}", current)
+                        }
+                        _ => println!("Equalizer: default / flat"),
+                    }
+                    return Ok(());
+                }
                 let arg_str = args.join(" ");
                 let res: Result<(bool, String), _> = proxy.call("SetEqualizer", &(arg_str,)).await;
                 match res {
@@ -829,79 +1012,6 @@ WantedBy=default.target
                 match res {
                     Ok((_, msg)) => println!("{}", msg),
                     Err(e) => eprintln!("Action button call failed: {}", e),
-                }
-                return Ok(());
-            }
-            eprintln!("Resonate daemon is not running.");
-        }
-
-        Commands::Touch { action } => {
-            if let Ok(conn) = zbus::Connection::session().await
-                && let Ok(proxy) = zbus::Proxy::new(
-                    &conn,
-                    "org.headbridge",
-                    "/org/headbridge",
-                    "org.headbridge.Manager",
-                )
-                .await
-            {
-                let enable = match action.as_deref() {
-                    Some("on") | Some("enable") | Some("true") | Some("1") => true,
-                    Some("off") | Some("disable") | Some("false") | Some("0") => false,
-                    _ => true,
-                };
-                let res: Result<bool, _> = proxy.call("SetTouchSensor", &(enable,)).await;
-                if let Ok(true) = res {
-                    println!("Touch sensor set to: {}", enable);
-                } else {
-                    eprintln!("Failed to set touch sensor.");
-                }
-                return Ok(());
-            }
-            eprintln!("Resonate daemon is not running.");
-        }
-
-        Commands::Dsee { action } => {
-            if let Ok(conn) = zbus::Connection::session().await
-                && let Ok(proxy) = zbus::Proxy::new(
-                    &conn,
-                    "org.headbridge",
-                    "/org/headbridge",
-                    "org.headbridge.Manager",
-                )
-                .await
-            {
-                let enable = match action.as_deref() {
-                    Some("on") | Some("enable") | Some("true") | Some("1") => true,
-                    Some("off") | Some("disable") | Some("false") | Some("0") => false,
-                    _ => true,
-                };
-                let res: Result<bool, _> = proxy.call("SetDsee", &(enable,)).await;
-                if let Ok(true) = res {
-                    println!("DSEE audio enhancement set to: {}", enable);
-                } else {
-                    eprintln!("Failed to set DSEE.");
-                }
-                return Ok(());
-            }
-            eprintln!("Resonate daemon is not running.");
-        }
-
-        Commands::Optimize { action } => {
-            if let Ok(conn) = zbus::Connection::session().await
-                && let Ok(proxy) = zbus::Proxy::new(
-                    &conn,
-                    "org.headbridge",
-                    "/org/headbridge",
-                    "org.headbridge.Manager",
-                )
-                .await
-            {
-                let act = action.unwrap_or_else(|| "start".to_string());
-                let res: Result<(bool, String), _> = proxy.call("Optimize", &(act,)).await;
-                match res {
-                    Ok((_, msg)) => println!("{}", msg),
-                    Err(e) => eprintln!("Optimize call failed: {}", e),
                 }
                 return Ok(());
             }

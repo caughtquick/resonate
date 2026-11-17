@@ -1,0 +1,272 @@
+import { Theme } from "../theme.slint";
+import { ScrollView } from "std-widgets.slint";
+
+export struct LogItem {
+    time: string,
+    message: string,
+    is_error: bool,
+}
+
+export component DiagnosticsPage inherits ScrollView {
+    in property <string> daemon_status: "Active (Running)";
+    in property <bool> daemon_running: true;
+    in property <string> audio_sink: "bluez_output.6C_12_70_3F_8E_AE.a2dp-sink";
+    in property <string> dbus_service_name: "org.headbridge.Manager";
+    in property <[LogItem]> logs: [];
+
+    callback start_daemon();
+    callback stop_daemon();
+    callback restart_daemon();
+    callback clear_logs();
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 20px;
+        alignment: start;
+
+        // Header
+        VerticalLayout {
+            spacing: 6px;
+
+            Text {
+                text: "Daemon Supervisor & Diagnostics";
+                color: Theme.text_primary;
+                font-size: 22px;
+                font-weight: 700;
+            }
+
+            Text {
+                text: "Inspect background D-Bus service health, manage the systemd daemon, and monitor real-time event telemetry";
+                color: Theme.text_secondary;
+                font-size: 13px;
+            }
+        }
+
+        // Service Control Card
+        Rectangle {
+            background: Theme.bg_card;
+            border-radius: Theme.radius_md;
+            border-width: 1px;
+            border-color: Theme.border;
+
+            VerticalLayout {
+                padding: 20px;
+                spacing: 16px;
+
+                HorizontalLayout {
+                    alignment: space-between;
+
+                    HorizontalLayout {
+                        spacing: 14px;
+                        alignment: start;
+
+                        Rectangle {
+                            width: 44px;
+                            height: 44px;
+                            border-radius: Theme.radius_md;
+                            background: root.daemon_running ? #10b98122 : #ef444422;
+
+                            Image {
+                                source: @image-url("../../assets/icons/activity.svg");
+                                width: 22px;
+                                height: 22px;
+                                colorize: root.daemon_running ? Theme.success : Theme.danger;
+                            }
+                        }
+
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 3px;
+
+                            HorizontalLayout {
+                                spacing: 8px;
+
+                                Text {
+                                    text: "Resonate Daemon (systemd)";
+                                    color: Theme.text_primary;
+                                    font-size: 15px;
+                                    font-weight: 600;
+                                }
+
+                                Rectangle {
+                                    border-radius: Theme.radius_pill;
+                                    background: root.daemon_running ? #10b98122 : #ef444422;
+                                    height: 20px;
+
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        padding-right: 8px;
+
+                                        Text {
+                                            text: root.daemon_status;
+                                            color: root.daemon_running ? Theme.success : Theme.danger;
+                                            font-size: 11px;
+                                            font-weight: 600;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+
+                            Text {
+                                text: "D-Bus Interface: " + root.dbus_service_name + " • Sink: " + root.audio_sink;
+                                color: Theme.text_muted;
+                                font-size: 12px;
+                            }
+                        }
+                    }
+
+                    // Action buttons
+                    HorizontalLayout {
+                        spacing: 10px;
+                        alignment: center;
+
+                        if !root.daemon_running : Rectangle {
+                            border-radius: Theme.radius_md;
+                            background: Theme.success;
+                            height: 34px;
+
+                            HorizontalLayout {
+                                padding-left: 14px;
+                                padding-right: 14px;
+
+                                Text {
+                                    text: "Start Daemon";
+                                    color: #ffffff;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            TouchArea { clicked => { root.start_daemon(); } }
+                        }
+
+                        if root.daemon_running : Rectangle {
+                            border-radius: Theme.radius_md;
+                            background: Theme.bg_input;
+                            border-width: 1px;
+                            border-color: Theme.border;
+                            height: 34px;
+
+                            HorizontalLayout {
+                                padding-left: 14px;
+                                padding-right: 14px;
+
+                                Text {
+                                    text: "Restart";
+                                    color: Theme.text_primary;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            TouchArea { clicked => { root.restart_daemon(); } }
+                        }
+
+                        if root.daemon_running : Rectangle {
+                            border-radius: Theme.radius_md;
+                            background: #ef444422;
+                            border-width: 1px;
+                            border-color: #ef444444;
+                            height: 34px;
+
+                            HorizontalLayout {
+                                padding-left: 14px;
+                                padding-right: 14px;
+
+                                Text {
+                                    text: "Stop";
+                                    color: Theme.danger;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            TouchArea { clicked => { root.stop_daemon(); } }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Live Event Stream Box
+        VerticalLayout {
+            spacing: 12px;
+
+            HorizontalLayout {
+                alignment: space-between;
+
+                Text {
+                    text: "REAL-TIME TELEMETRY EVENT STREAM";
+                    color: Theme.text_muted;
+                    font-size: 11px;
+                    font-weight: 700;
+                    letter-spacing: 1px;
+                }
+
+                Rectangle {
+                    border-radius: Theme.radius_sm;
+                    background: Theme.bg_input;
+                    height: 22px;
+
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+
+                        Text {
+                            text: "Clear Log";
+                            color: Theme.text_muted;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    TouchArea { clicked => { root.clear_logs(); } }
+                }
+            }
+
+            Rectangle {
+                background: Theme.bg_darkest;
+                border-radius: Theme.radius_md;
+                border-width: 1px;
+                border-color: Theme.border;
+                height: 240px;
+
+                VerticalLayout {
+                    padding: 14px;
+                    spacing: 6px;
+
+                    if root.logs.length == 0 : Text {
+                        text: "Listening for StateChanged signals from org.headbridge...";
+                        color: Theme.text_muted;
+                        font-size: 12px;
+                    }
+
+                    for item in root.logs : HorizontalLayout {
+                        spacing: 12px;
+                        alignment: start;
+
+                        Text {
+                            text: item.time;
+                            color: Theme.text_muted;
+                            font-size: 11px;
+                            font-family: "monospace";
+                            vertical-alignment: center;
+                        }
+
+                        Text {
+                            text: item.message;
+                            color: item.is_error ? Theme.danger : Theme.text_secondary;
+                            font-size: 12px;
+                            font-family: "monospace";
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

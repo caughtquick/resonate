@@ -80,6 +80,18 @@ export component MainWindow inherits Window {
     callback restart_daemon();
     callback clear_logs();
 
+    forward-focus: fs;
+    fs := FocusScope {
+        key-pressed(event) => {
+            if (event.text == "1") { root.active_page = 0; return accept; }
+            if (event.text == "2") { root.active_page = 1; return accept; }
+            if (event.text == "3") { root.active_page = 2; return accept; }
+            if (event.text == "4") { root.active_page = 3; return accept; }
+            if (event.text == "5") { root.active_page = 4; return accept; }
+            reject
+        }
+    }
+
     HorizontalLayout {
         // SIDEBAR
         Rectangle {

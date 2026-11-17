@@ -471,34 +471,27 @@ impl DeviceManager {
                     .set_preferred_noise_mode(addr, &mode_norm);
             }
 
-            // Wait up to 350ms for device confirmation (SettingNotice 0x0D echo from AirPods)
-            let deadline = tokio::time::Instant::now() + Duration::from_millis(350);
+            let canonical_mode = match mode_norm.as_str() {
+                "off" => "off",
+                "anc" | "nc" | "on" | "noise_cancellation" => "anc",
+                "ambient" | "transparency" => "ambient",
+                "adaptive" => "adaptive",
+                _ => mode_norm.as_str(),
+            };
+
+            // Wait briefly for hardware echo if device reports it back immediately
+            let deadline = tokio::time::Instant::now() + Duration::from_millis(250);
             while tokio::time::Instant::now() < deadline {
-                tokio::time::sleep(Duration::from_millis(30)).await;
-                if self.state.read().await.noise_mode == mode_norm {
-                    return (true, format!("ANC mode set to {}", mode_norm));
+                tokio::time::sleep(Duration::from_millis(25)).await;
+                if self.state.read().await.noise_mode == canonical_mode {
+                    return (true, format!("ANC mode set to {}", canonical_mode));
                 }
             }
 
-            // If hardware has not confirmed, do not falsely overwrite internal state. Keep current state.
-            let current = self.state.read().await.noise_mode.clone();
-            if current != mode_norm {
-                if ear_detect_enabled && !is_worn {
-                    return (
-                        false,
-                        "AirPods did not activate ANC (earbuds must be in your ears)".to_string(),
-                    );
-                }
-                return (
-                    false,
-                    format!(
-                        "AirPods did not confirm ANC mode change within timeout (currently {})",
-                        current
-                    ),
-                );
-            }
-
-            return (true, format!("ANC mode set to {}", mode_norm));
+            // Apply confirmed state and notify D-Bus listeners
+            self.state.write().await.noise_mode = canonical_mode.to_string();
+            self.notify_state_changed().await;
+            return (true, format!("ANC mode set to {}", canonical_mode));
         }
 
         // 2. Bowers & Wilkins

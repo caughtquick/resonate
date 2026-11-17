@@ -1,4 +1,5 @@
 import { Theme } from "theme.slint";
+export { Theme }
 import { DashboardPage } from "pages/dashboard.slint";
 import { EqualizerPage } from "pages/equalizer.slint";
 import { SettingsPage } from "pages/settings.slint";
@@ -7,9 +8,10 @@ import { DiagnosticsPage, LogItem } from "pages/diagnostics.slint";
 
 export component MainWindow inherits Window {
     title: "Resonate Studio";
-    min-width: 960px;
+    default-font-family: Theme.font_family;
+    min-width: 980px;
     min-height: 640px;
-    preferred-width: 1040px;
+    preferred-width: 1060px;
     preferred-height: 720px;
     background: Theme.bg_main;
 
@@ -81,12 +83,13 @@ export component MainWindow inherits Window {
     HorizontalLayout {
         // SIDEBAR
         Rectangle {
-            width: 240px;
+            width: 260px;
             background: Theme.bg_sidebar;
-            border-width: 0px;
+            border-width: 1px;
+            border-color: Theme.border;
 
             VerticalLayout {
-                padding: 18px;
+                padding: 16px;
                 spacing: 16px;
                 alignment: space-between;
 
@@ -99,17 +102,24 @@ export component MainWindow inherits Window {
                         spacing: 12px;
                         alignment: start;
 
-                        Rectangle {
-                            width: 38px;
-                            height: 38px;
-                            border-radius: Theme.radius_md;
-                            background: Theme.accent;
+                        VerticalLayout {
+                            alignment: center;
 
-                            Image {
-                                source: @image-url("../assets/icons/headphone.svg");
-                                width: 20px;
-                                height: 20px;
-                                colorize: #ffffff;
+                            Rectangle {
+                                width: 38px;
+                                height: 38px;
+                                border-radius: Theme.radius_md;
+                                background: Theme.accent;
+
+                                Image {
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2 - 1px;
+                                    width: 22px;
+                                    height: 22px;
+                                    image-fit: contain;
+                                    source: @image-url("../assets/icons/headphone.svg");
+                                    colorize: #1d2021;
+                                }
                             }
                         }
 
@@ -127,7 +137,7 @@ export component MainWindow inherits Window {
 
                             Text {
                                 text: "Device Studio";
-                                color: Theme.accent_hover;
+                                color: Theme.accent;
                                 font-size: 11px;
                                 font-weight: 600;
                             }
@@ -140,31 +150,51 @@ export component MainWindow inherits Window {
 
                         // Nav 0: Dashboard
                         Rectangle {
-                            height: 40px;
+                            height: 44px;
                             border-radius: Theme.radius_md;
-                            background: root.active_page == 0 ? Theme.accent_subtle : (touch0.has_hover ? Theme.bg_card_hover : #00000000);
+                            background: root.active_page == 0 ? Theme.bg_card : (touch0.has_hover ? Theme.bg_card_hover : #00000000);
                             border-width: 1px;
                             border-color: root.active_page == 0 ? Theme.accent : #00000000;
 
                             HorizontalLayout {
-                                padding-left: 14px;
-                                spacing: 12px;
+                                padding-left: 10px;
+                                padding-right: 12px;
+                                spacing: 10px;
                                 alignment: start;
 
-                                Image {
-                                    source: @image-url("../assets/icons/headphone.svg");
-                                    width: 18px;
-                                    height: 18px;
-                                    colorize: root.active_page == 0 ? Theme.accent_hover : Theme.text_muted;
-                                    vertical-alignment: center;
+                                VerticalLayout {
+                                    alignment: center;
+
+                                    Rectangle {
+                                        width: 28px;
+                                        height: 28px;
+                                        border-radius: Theme.radius_sm;
+                                        background: root.active_page == 0 ? Theme.icon_bg_amber : (touch0.has_hover ? Theme.bg_input : #28282866);
+                                        border-width: 1px;
+                                        border-color: root.active_page == 0 ? Theme.accent : #3a383688;
+
+                                        Image {
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
+                                            width: 16px;
+                                            height: 16px;
+                                            image-fit: contain;
+                                            source: @image-url("../assets/icons/headphone.svg");
+                                            colorize: root.active_page == 0 ? Theme.accent : Theme.text_muted;
+                                        }
+                                    }
                                 }
 
-                                Text {
-                                    text: "Dashboard";
-                                    color: root.active_page == 0 ? #ffffff : Theme.text_secondary;
-                                    font-size: 13px;
-                                    font-weight: root.active_page == 0 ? 600 : 500;
-                                    vertical-alignment: center;
+                                VerticalLayout {
+                                    alignment: center;
+
+                                    Text {
+                                        text: "Dashboard";
+                                        color: root.active_page == 0 ? Theme.text_primary : Theme.text_secondary;
+                                        font-size: 12.5px;
+                                        font-weight: root.active_page == 0 ? 700 : 500;
+                                        overflow: elide;
+                                    }
                                 }
                             }
 
@@ -173,31 +203,51 @@ export component MainWindow inherits Window {
 
                         // Nav 1: Equalizer
                         Rectangle {
-                            height: 40px;
+                            height: 44px;
                             border-radius: Theme.radius_md;
-                            background: root.active_page == 1 ? Theme.accent_subtle : (touch1.has_hover ? Theme.bg_card_hover : #00000000);
+                            background: root.active_page == 1 ? Theme.bg_card : (touch1.has_hover ? Theme.bg_card_hover : #00000000);
                             border-width: 1px;
                             border-color: root.active_page == 1 ? Theme.accent : #00000000;
 
                             HorizontalLayout {
-                                padding-left: 14px;
-                                spacing: 12px;
+                                padding-left: 10px;
+                                padding-right: 12px;
+                                spacing: 10px;
                                 alignment: start;
 
-                                Image {
-                                    source: @image-url("../assets/icons/sliders.svg");
-                                    width: 18px;
-                                    height: 18px;
-                                    colorize: root.active_page == 1 ? Theme.accent_hover : Theme.text_muted;
-                                    vertical-alignment: center;
+                                VerticalLayout {
+                                    alignment: center;
+
+                                    Rectangle {
+                                        width: 28px;
+                                        height: 28px;
+                                        border-radius: Theme.radius_sm;
+                                        background: root.active_page == 1 ? Theme.icon_bg_amber : (touch1.has_hover ? Theme.bg_input : #28282866);
+                                        border-width: 1px;
+                                        border-color: root.active_page == 1 ? Theme.accent : #3a383688;
+
+                                        Image {
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
+                                            width: 16px;
+                                            height: 16px;
+                                            image-fit: contain;
+                                            source: @image-url("../assets/icons/sliders.svg");
+                                            colorize: root.active_page == 1 ? Theme.accent : Theme.text_muted;
+                                        }
+                                    }
                                 }
 
-                                Text {
-                                    text: "Equalizer Studio";
-                                    color: root.active_page == 1 ? #ffffff : Theme.text_secondary;
-                                    font-size: 13px;
-                                    font-weight: root.active_page == 1 ? 600 : 500;
-                                    vertical-alignment: center;
+                                VerticalLayout {
+                                    alignment: center;
+
+                                    Text {
+                                        text: "Equalizer Studio";
+                                        color: root.active_page == 1 ? Theme.text_primary : Theme.text_secondary;
+                                        font-size: 12.5px;
+                                        font-weight: root.active_page == 1 ? 700 : 500;
+                                        overflow: elide;
+                                    }
                                 }
                             }
 
@@ -206,31 +256,51 @@ export component MainWindow inherits Window {
 
                         // Nav 2: Settings
                         Rectangle {
-                            height: 40px;
+                            height: 44px;
                             border-radius: Theme.radius_md;
-                            background: root.active_page == 2 ? Theme.accent_subtle : (touch2.has_hover ? Theme.bg_card_hover : #00000000);
+                            background: root.active_page == 2 ? Theme.bg_card : (touch2.has_hover ? Theme.bg_card_hover : #00000000);
                             border-width: 1px;
                             border-color: root.active_page == 2 ? Theme.accent : #00000000;
 
                             HorizontalLayout {
-                                padding-left: 14px;
-                                spacing: 12px;
+                                padding-left: 10px;
+                                padding-right: 12px;
+                                spacing: 10px;
                                 alignment: start;
 
-                                Image {
-                                    source: @image-url("../assets/icons/settings.svg");
-                                    width: 18px;
-                                    height: 18px;
-                                    colorize: root.active_page == 2 ? Theme.accent_hover : Theme.text_muted;
-                                    vertical-alignment: center;
+                                VerticalLayout {
+                                    alignment: center;
+
+                                    Rectangle {
+                                        width: 28px;
+                                        height: 28px;
+                                        border-radius: Theme.radius_sm;
+                                        background: root.active_page == 2 ? Theme.icon_bg_amber : (touch2.has_hover ? Theme.bg_input : #28282866);
+                                        border-width: 1px;
+                                        border-color: root.active_page == 2 ? Theme.accent : #3a383688;
+
+                                        Image {
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
+                                            width: 16px;
+                                            height: 16px;
+                                            image-fit: contain;
+                                            source: @image-url("../assets/icons/settings.svg");
+                                            colorize: root.active_page == 2 ? Theme.accent : Theme.text_muted;
+                                        }
+                                    }
                                 }
 
-                                Text {
-                                    text: "Hardware Settings";
-                                    color: root.active_page == 2 ? #ffffff : Theme.text_secondary;
-                                    font-size: 13px;
-                                    font-weight: root.active_page == 2 ? 600 : 500;
-                                    vertical-alignment: center;
+                                VerticalLayout {
+                                    alignment: center;
+
+                                    Text {
+                                        text: "Hardware Settings";
+                                        color: root.active_page == 2 ? Theme.text_primary : Theme.text_secondary;
+                                        font-size: 12.5px;
+                                        font-weight: root.active_page == 2 ? 700 : 500;
+                                        overflow: elide;
+                                    }
                                 }
                             }
 
@@ -239,31 +309,51 @@ export component MainWindow inherits Window {
 
                         // Nav 3: Multipoint & Devices
                         Rectangle {
-                            height: 40px;
+                            height: 44px;
                             border-radius: Theme.radius_md;
-                            background: root.active_page == 3 ? Theme.accent_subtle : (touch3.has_hover ? Theme.bg_card_hover : #00000000);
+                            background: root.active_page == 3 ? Theme.bg_card : (touch3.has_hover ? Theme.bg_card_hover : #00000000);
                             border-width: 1px;
                             border-color: root.active_page == 3 ? Theme.accent : #00000000;
 
                             HorizontalLayout {
-                                padding-left: 14px;
-                                spacing: 12px;
+                                padding-left: 10px;
+                                padding-right: 12px;
+                                spacing: 10px;
                                 alignment: start;
 
-                                Image {
-                                    source: @image-url("../assets/icons/bluetooth.svg");
-                                    width: 18px;
-                                    height: 18px;
-                                    colorize: root.active_page == 3 ? Theme.accent_hover : Theme.text_muted;
-                                    vertical-alignment: center;
+                                VerticalLayout {
+                                    alignment: center;
+
+                                    Rectangle {
+                                        width: 28px;
+                                        height: 28px;
+                                        border-radius: Theme.radius_sm;
+                                        background: root.active_page == 3 ? Theme.icon_bg_amber : (touch3.has_hover ? Theme.bg_input : #28282866);
+                                        border-width: 1px;
+                                        border-color: root.active_page == 3 ? Theme.accent : #3a383688;
+
+                                        Image {
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
+                                            width: 16px;
+                                            height: 16px;
+                                            image-fit: contain;
+                                            source: @image-url("../assets/icons/bluetooth.svg");
+                                            colorize: root.active_page == 3 ? Theme.accent : Theme.text_muted;
+                                        }
+                                    }
                                 }
 
-                                Text {
-                                    text: "Devices & Multipoint";
-                                    color: root.active_page == 3 ? #ffffff : Theme.text_secondary;
-                                    font-size: 13px;
-                                    font-weight: root.active_page == 3 ? 600 : 500;
-                                    vertical-alignment: center;
+                                VerticalLayout {
+                                    alignment: center;
+
+                                    Text {
+                                        text: "Devices & Multipoint";
+                                        color: root.active_page == 3 ? Theme.text_primary : Theme.text_secondary;
+                                        font-size: 12.5px;
+                                        font-weight: root.active_page == 3 ? 700 : 500;
+                                        overflow: elide;
+                                    }
                                 }
                             }
 
@@ -272,31 +362,51 @@ export component MainWindow inherits Window {
 
                         // Nav 4: Diagnostics
                         Rectangle {
-                            height: 40px;
+                            height: 44px;
                             border-radius: Theme.radius_md;
-                            background: root.active_page == 4 ? Theme.accent_subtle : (touch4.has_hover ? Theme.bg_card_hover : #00000000);
+                            background: root.active_page == 4 ? Theme.bg_card : (touch4.has_hover ? Theme.bg_card_hover : #00000000);
                             border-width: 1px;
                             border-color: root.active_page == 4 ? Theme.accent : #00000000;
 
                             HorizontalLayout {
-                                padding-left: 14px;
-                                spacing: 12px;
+                                padding-left: 10px;
+                                padding-right: 12px;
+                                spacing: 10px;
                                 alignment: start;
 
-                                Image {
-                                    source: @image-url("../assets/icons/activity.svg");
-                                    width: 18px;
-                                    height: 18px;
-                                    colorize: root.active_page == 4 ? Theme.accent_hover : Theme.text_muted;
-                                    vertical-alignment: center;
+                                VerticalLayout {
+                                    alignment: center;
+
+                                    Rectangle {
+                                        width: 28px;
+                                        height: 28px;
+                                        border-radius: Theme.radius_sm;
+                                        background: root.active_page == 4 ? Theme.icon_bg_amber : (touch4.has_hover ? Theme.bg_input : #28282866);
+                                        border-width: 1px;
+                                        border-color: root.active_page == 4 ? Theme.accent : #3a383688;
+
+                                        Image {
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
+                                            width: 16px;
+                                            height: 16px;
+                                            image-fit: contain;
+                                            source: @image-url("../assets/icons/activity.svg");
+                                            colorize: root.active_page == 4 ? Theme.accent : Theme.text_muted;
+                                        }
+                                    }
                                 }
 
-                                Text {
-                                    text: "Diagnostics";
-                                    color: root.active_page == 4 ? #ffffff : Theme.text_secondary;
-                                    font-size: 13px;
-                                    font-weight: root.active_page == 4 ? 600 : 500;
-                                    vertical-alignment: center;
+                                VerticalLayout {
+                                    alignment: center;
+
+                                    Text {
+                                        text: "Diagnostics";
+                                        color: root.active_page == 4 ? Theme.text_primary : Theme.text_secondary;
+                                        font-size: 12.5px;
+                                        font-weight: root.active_page == 4 ? 700 : 500;
+                                        overflow: elide;
+                                    }
                                 }
                             }
 
@@ -385,7 +495,7 @@ export component MainWindow inherits Window {
                 is_charging: root.is_charging;
                 in_ear_primary: root.in_ear_primary;
                 in_ear_secondary: root.in_ear_secondary;
-                noise_mode: root.noise_mode;
+                noise_mode <=> root.noise_mode;
                 auto_pause <=> root.auto_pause;
                 conv_aware <=> root.conv_aware;
                 one_bud_anc <=> root.one_bud_anc;

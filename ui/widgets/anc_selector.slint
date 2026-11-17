@@ -7,36 +7,46 @@ export component AncModeCard inherits Rectangle {
     in property <bool> is_active: false;
     callback clicked();
 
-    background: is_active ? Theme.accent_subtle : (touch.has_hover ? Theme.bg_card_hover : Theme.bg_card);
+    background: is_active ? #302f2d : (touch.has_hover ? Theme.bg_card_hover : Theme.bg_card);
     border-radius: Theme.radius_md;
-    border-width: is_active ? 2px : 1px;
+    border-width: is_active ? 1.5px : 1px;
     border-color: is_active ? Theme.accent : Theme.border;
-    min-height: 80px;
+    height: 64px;
 
     animate background { duration: 150ms; }
     animate border-color { duration: 150ms; }
 
     HorizontalLayout {
-        padding: 14px;
+        padding-left: 14px;
+        padding-right: 14px;
         spacing: 12px;
         alignment: start;
 
-        // Mode icon pill
-        Rectangle {
-            width: 40px;
-            height: 40px;
-            border-radius: Theme.radius_md;
-            background: root.is_active ? Theme.accent : Theme.bg_input;
+        // Mode icon pill - centered vertically in the card
+        VerticalLayout {
+            alignment: center;
 
-            Image {
-                source: root.mode_id == "off" ? @image-url("../../assets/icons/anc-off.svg") :
-                        (root.mode_id == "anc" ? @image-url("../../assets/icons/anc-on.svg") :
-                        (root.mode_id == "ambient" ? @image-url("../../assets/icons/anc-transparency.svg") :
-                        (root.mode_id == "adaptive" ? @image-url("../../assets/icons/anc-adaptive.svg") :
-                        @image-url("../../assets/icons/anc-wind.svg"))));
-                width: 18px;
-                height: 18px;
-                colorize: root.is_active ? #ffffff : Theme.text_secondary;
+            Rectangle {
+                width: 38px;
+                height: 38px;
+                border-radius: Theme.radius_sm;
+                background: root.is_active ? Theme.icon_bg_amber : Theme.bg_input;
+                border-width: 1px;
+                border-color: root.is_active ? Theme.accent : Theme.border;
+
+                Image {
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    width: 22px;
+                    height: 22px;
+                    image-fit: contain;
+                    source: root.mode_id == "off" ? @image-url("../../assets/icons/anc-off.svg") :
+                            (root.mode_id == "anc" ? @image-url("../../assets/icons/anc-on.svg") :
+                            (root.mode_id == "ambient" ? @image-url("../../assets/icons/anc-transparency.svg") :
+                            (root.mode_id == "adaptive" ? @image-url("../../assets/icons/anc-adaptive.svg") :
+                            @image-url("../../assets/icons/anc-wind.svg"))));
+                    colorize: root.is_active ? Theme.accent : Theme.text_muted;
+                }
             }
         }
 
@@ -46,14 +56,14 @@ export component AncModeCard inherits Rectangle {
 
             Text {
                 text: root.title;
-                color: root.is_active ? Theme.text_primary : Theme.text_secondary;
+                color: root.is_active ? Theme.accent : Theme.text_primary;
                 font-size: 13px;
-                font-weight: 600;
+                font-weight: 700;
             }
 
             Text {
                 text: root.description;
-                color: Theme.text_muted;
+                color: Theme.text_secondary;
                 font-size: 11px;
             }
         }

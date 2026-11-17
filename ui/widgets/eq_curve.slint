@@ -30,7 +30,7 @@ export component EqualizerStudio inherits Rectangle {
                 y: parent.height / 2;
                 height: 1px;
                 width: parent.width;
-                background: #33415555;
+                background: Theme.border;
             }
 
             // Curve endpoints and center representation
@@ -74,7 +74,7 @@ export component EqualizerStudio inherits Rectangle {
 
                 Text {
                     text: "Treble (10 kHz): " + (root.treble_db >= 0 ? "+" : "") + Math.round(root.treble_db * 10) / 10 + " dB";
-                    color: Theme.accent_purple;
+                    color: Theme.accent_aqua;
                     font-size: 12px;
                     font-weight: 600;
                 }

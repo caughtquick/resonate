@@ -11,104 +11,121 @@ export component BatteryPod inherits Rectangle {
     border-radius: Theme.radius_md;
     border-width: 1px;
     border-color: Theme.border;
-    min-width: 150px;
-    height: 125px;
+    height: 76px;
 
     VerticalLayout {
-        padding: 16px;
-        spacing: 10px;
+        padding: 12px;
+        spacing: 8px;
         alignment: space-between;
 
-        // Header: icon & placement badge
+        // Header: icon, label, percent, and placement badge
         HorizontalLayout {
             alignment: space-between;
 
             HorizontalLayout {
-                spacing: 8px;
+                spacing: 10px;
                 alignment: start;
 
-                Image {
-                    source: root.pod_type == "left" ? @image-url("../../assets/icons/earbud-left.svg") :
-                            (root.pod_type == "right" ? @image-url("../../assets/icons/earbud-right.svg") :
-                            (root.pod_type == "case" ? @image-url("../../assets/icons/case.svg") :
-                            @image-url("../../assets/icons/headphone.svg")));
-                    width: 16px;
-                    height: 16px;
-                    colorize: root.percent >= 0 ? Theme.text_primary : Theme.text_muted;
-                    vertical-alignment: center;
+                // Tinted icon container - centered vertically
+                VerticalLayout {
+                    alignment: center;
+
+                    Rectangle {
+                        width: 38px;
+                        height: 38px;
+                        border-radius: Theme.radius_sm;
+                        background: root.percent >= 0 ? Theme.icon_bg_amber : Theme.bg_input;
+                        border-width: 1px;
+                        border-color: root.percent >= 0 ? Theme.accent : Theme.border;
+
+                        Image {
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                            width: 22px;
+                            height: 22px;
+                            image-fit: contain;
+                            source: root.pod_type == "left" ? @image-url("../../assets/icons/earbud-left.svg") :
+                                    (root.pod_type == "right" ? @image-url("../../assets/icons/earbud-right.svg") :
+                                    (root.pod_type == "case" ? @image-url("../../assets/icons/case.svg") :
+                                    @image-url("../../assets/icons/headphone.svg")));
+                            colorize: root.percent >= 0 ? Theme.accent : Theme.text_muted;
+                        }
+                    }
                 }
 
-                Text {
-                    text: root.label;
-                    color: Theme.text_secondary;
-                    font-size: 13px;
-                    font-weight: 600;
-                    vertical-alignment: center;
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 2px;
+
+                    Text {
+                        text: root.label;
+                        color: Theme.text_primary;
+                        font-size: 13px;
+                        font-weight: 700;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 6px;
+                        alignment: start;
+
+                        Text {
+                            text: root.percent >= 0 ? ("" + root.percent + "%") : "--";
+                            color: root.percent >= 0 ? Theme.accent : Theme.text_disabled;
+                            font-size: 14px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+
+                        if root.charging : Image {
+                            source: @image-url("../../assets/icons/bolt.svg");
+                            width: 14px;
+                            height: 14px;
+                            colorize: Theme.success;
+                            vertical-alignment: center;
+                        }
+                    }
                 }
             }
 
             // Placement pill badge
-            if root.placement != "unknown" && root.placement != "" : Rectangle {
-                border-radius: Theme.radius_pill;
-                background: root.placement == "in_ear" ? #10b98122 : (root.placement == "in_case" ? #f59e0b22 : #33415544);
-                border-width: 1px;
-                border-color: root.placement == "in_ear" ? #10b98166 : (root.placement == "in_case" ? #f59e0b66 : #64748b66);
-                height: 20px;
+            if root.placement != "unknown" && root.placement != "" : VerticalLayout {
+                alignment: center;
 
-                HorizontalLayout {
-                    padding-left: 8px;
-                    padding-right: 8px;
+                Rectangle {
+                    border-radius: Theme.radius_pill;
+                    background: root.placement == "in_ear" ? #b8bb2622 : (root.placement == "in_case" ? #fabd2f22 : #50494540);
+                    border-width: 1px;
+                    border-color: root.placement == "in_ear" ? #b8bb2666 : (root.placement == "in_case" ? #fabd2f66 : #50494588);
+                    height: 22px;
 
-                    Text {
-                        text: root.placement == "in_ear" ? "In Ear" : (root.placement == "in_case" ? "In Case" : "Out of Ear");
-                        color: root.placement == "in_ear" ? #34d399 : (root.placement == "in_case" ? #fbbf24 : #94a3b8);
-                        font-size: 10px;
-                        font-weight: 600;
-                        vertical-alignment: center;
-                        horizontal-alignment: center;
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+
+                        Text {
+                            text: root.placement == "in_ear" ? "In Ear" : (root.placement == "in_case" ? "In Case" : "Out of Ear");
+                            color: root.placement == "in_ear" ? Theme.success : (root.placement == "in_case" ? Theme.warning : Theme.text_secondary);
+                            font-size: 10px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
                     }
                 }
             }
         }
 
-        // Main Battery Number
-        HorizontalLayout {
-            spacing: 6px;
-            alignment: start;
-
-            Text {
-                text: root.percent >= 0 ? "\{root.percent}%" : "--";
-                color: root.percent >= 0 ? Theme.text_primary : Theme.text_disabled;
-                font-size: 26px;
-                font-weight: 700;
-                vertical-alignment: center;
-            }
-
-            if root.charging : Image {
-                source: @image-url("../../assets/icons/bolt.svg");
-                width: 16px;
-                height: 16px;
-                colorize: Theme.success;
-                vertical-alignment: center;
-            }
-        }
-
         // Progress bar
         Rectangle {
-            height: 5px;
+            height: 4px;
             background: Theme.bg_input;
-            border-radius: Theme.radius_pill;
+            border-radius: 2px;
 
-            Rectangle {
+            if root.percent > 0 : Rectangle {
                 x: 0;
-                y: 0;
+                width: parent.width * Math.min(100, Math.max(0, root.percent)) / 100;
                 height: parent.height;
-                width: root.percent >= 0 ? parent.width * (root.percent / 100.0) : 0px;
-                border-radius: Theme.radius_pill;
-                background: root.charging ? Theme.success : (root.percent > 40 ? Theme.accent : (root.percent > 20 ? Theme.warning : Theme.danger));
-
-                animate width { duration: 300ms; }
-                animate background { duration: 200ms; }
+                border-radius: 2px;
+                background: root.percent > 20 ? Theme.success : Theme.danger;
             }
         }
     }

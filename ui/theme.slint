@@ -1,39 +1,54 @@
 export global Theme {
-    // Primary background layers
-    out property <color> bg_darkest: #0f1117;
-    out property <color> bg_sidebar: #131620;
-    out property <color> bg_main: #181c27;
-    out property <color> bg_card: #1f2433;
-    out property <color> bg_card_hover: #262c3e;
-    out property <color> bg_card_active: #2e354b;
-    out property <color> bg_input: #151822;
+    // Font settings
+    in-out property <string> font_family: "JetBrainsMono Nerd Font";
 
-    // Accent colors
-    out property <color> accent: #3b82f6;          // Blue
-    out property <color> accent_hover: #60a5fa;
-    out property <color> accent_subtle: #1e3a8a33;
-    out property <color> accent_purple: #8b5cf6;
-    out property <color> accent_teal: #14b8a6;
+    // Primary background layers (Warm neutral dark / Gruvbox soft charcoal)
+    in-out property <color> bg_darkest: #161616;      // Hard dark background
+    in-out property <color> bg_sidebar: #1d1c1a;      // Sidebar deep warm charcoal
+    in-out property <color> bg_main: #242424;         // Main canvas soft charcoal
+    in-out property <color> bg_card: #282828;         // Card container
+    in-out property <color> bg_tile: #302f2d;         // Inner tile / well
+    in-out property <color> bg_card_hover: #32302f;   // Card hovered
+    in-out property <color> bg_card_active: #3c3836;  // Card pressed/active
+    in-out property <color> bg_input: #1c1c1c;        // Input / inner wells
+    in-out property <color> bg_pill: #3c3836;         // Pill badge background
+
+    // Accent colors (Warm amber / orange / gold, NOT blue)
+    in-out property <color> accent: #fabd2f;          // Warm Gold/Amber
+    in-out property <color> accent_hover: #fbf1c7;    // Light Cream
+    in-out property <color> accent_subtle: #fabd2f22; // 13% opacity amber
+    in-out property <color> accent_orange: #fe8019;   // Warm Orange
+    in-out property <color> accent_purple: #d3869b;   // Mauve / Purple (Bluetooth)
+    in-out property <color> accent_aqua: #8ec07c;     // Aqua / Teal
+    in-out property <color> accent_blue: #83a598;     // Muted Blue
+
+    // Tile icon backgrounds (translucent)
+    in-out property <color> icon_bg_amber: #fabd2f26;
+    in-out property <color> icon_bg_green: #b8bb2626;
+    in-out property <color> icon_bg_purple: #d3869b26;
+    in-out property <color> icon_bg_aqua: #8ec07c26;
+    in-out property <color> icon_bg_orange: #fe801926;
+    in-out property <color> icon_bg_neutral: #50494540;
 
     // Status colors
-    out property <color> success: #10b981;         // Green (Charging / Connected)
-    out property <color> warning: #f59e0b;         // Orange (Medium battery / Disconnected)
-    out property <color> danger: #ef4444;          // Red (Low battery / Error)
-    out property <color> info: #06b6d4;            // Cyan (Adaptive)
+    in-out property <color> success: #b8bb26;         // Gruvbox Green (Charging / Connected)
+    in-out property <color> warning: #fabd2f;         // Gruvbox Yellow/Amber
+    in-out property <color> danger: #fb4934;          // Gruvbox Red
+    in-out property <color> info: #8ec07c;            // Gruvbox Aqua
 
-    // Typography & Text
-    out property <color> text_primary: #f8fafc;
-    out property <color> text_secondary: #94a3b8;
-    out property <color> text_muted: #64748b;
-    out property <color> text_disabled: #475569;
+    // Typography & Text (Warm off-white & grays)
+    in-out property <color> text_primary: #ebdbb2;    // Light Cream
+    in-out property <color> text_secondary: #bdae93;  // Warm Gray
+    in-out property <color> text_muted: #7c6f64;      // Muted Gray
+    in-out property <color> text_disabled: #504945;   // Disabled
 
     // Borders & Dividers
-    out property <color> border: #283046;
-    out property <color> border_light: #333d59;
+    in-out property <color> border: #3a3836;          // Subtle card border
+    in-out property <color> border_light: #504945;    // Highlight border
 
     // Standard border radii
     out property <length> radius_sm: 6px;
     out property <length> radius_md: 10px;
-    out property <length> radius_lg: 16px;
+    out property <length> radius_lg: 14px;
     out property <length> radius_pill: 9999px;
 }

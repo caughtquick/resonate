@@ -21,7 +21,7 @@ export component DashboardPage inherits ScrollView {
     in property <string> in_ear_secondary: "unknown";
 
     // Mode
-    in property <string> noise_mode: "off";
+    in-out property <string> noise_mode: "off";
 
     // Toggles
     in-out property <bool> auto_pause: true;
@@ -39,7 +39,7 @@ export component DashboardPage inherits ScrollView {
 
     VerticalLayout {
         padding: 24px;
-        spacing: 20px;
+        spacing: 22px;
         alignment: start;
 
         // HERO DEVICE CARD
@@ -50,8 +50,8 @@ export component DashboardPage inherits ScrollView {
             border-color: Theme.border;
 
             VerticalLayout {
-                padding: 20px;
-                spacing: 16px;
+                padding: 18px;
+                spacing: 14px;
 
                 HorizontalLayout {
                     alignment: space-between;
@@ -60,20 +60,27 @@ export component DashboardPage inherits ScrollView {
                         spacing: 16px;
                         alignment: start;
 
-                        // Big device avatar
-                        Rectangle {
-                            width: 52px;
-                            height: 52px;
-                            border-radius: Theme.radius_md;
-                            background: root.connected ? Theme.accent_subtle : Theme.bg_input;
-                            border-width: 1px;
-                            border-color: root.connected ? Theme.accent : Theme.border;
+                        // Device avatar with amber/neutral background - centered vertically
+                        VerticalLayout {
+                            alignment: center;
 
-                            Image {
-                                source: @image-url("../../assets/icons/headphone.svg");
-                                width: 24px;
-                                height: 24px;
-                                colorize: root.connected ? Theme.accent_hover : Theme.text_muted;
+                            Rectangle {
+                                width: 50px;
+                                height: 50px;
+                                border-radius: Theme.radius_md;
+                                background: root.connected ? Theme.icon_bg_amber : Theme.bg_input;
+                                border-width: 1px;
+                                border-color: root.connected ? Theme.accent : Theme.border;
+
+                                Image {
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2 - 1px;
+                                    width: 28px;
+                                    height: 28px;
+                                    image-fit: contain;
+                                    source: @image-url("../../assets/icons/headphone.svg");
+                                    colorize: root.connected ? Theme.accent : Theme.text_muted;
+                                }
                             }
                         }
 
@@ -88,13 +95,13 @@ export component DashboardPage inherits ScrollView {
                                 Text {
                                     text: root.device_name != "" ? root.device_name : "Disconnected";
                                     color: Theme.text_primary;
-                                    font-size: 18px;
+                                    font-size: 17px;
                                     font-weight: 700;
                                 }
 
                                 if root.vendor != "" && root.vendor != "Unknown" : Rectangle {
                                     border-radius: Theme.radius_pill;
-                                    background: Theme.bg_input;
+                                    background: Theme.bg_pill;
                                     border-width: 1px;
                                     border-color: Theme.border;
                                     height: 22px;
@@ -122,67 +129,71 @@ export component DashboardPage inherits ScrollView {
                         }
                     }
 
-                    // Connection Action Button / Status Badge
-                    HorizontalLayout {
+                    // Connection Action Button / Status Badge - centered vertically
+                    VerticalLayout {
                         alignment: center;
-                        spacing: 12px;
 
-                        Rectangle {
-                            border-radius: Theme.radius_pill;
-                            background: root.connected ? #10b98122 : #33415544;
-                            border-width: 1px;
-                            border-color: root.connected ? #10b98166 : #47556966;
-                            height: 28px;
+                        HorizontalLayout {
+                            alignment: center;
+                            spacing: 12px;
 
-                            HorizontalLayout {
-                                padding-left: 10px;
-                                padding-right: 10px;
-                                spacing: 6px;
-                                alignment: center;
+                            Rectangle {
+                                border-radius: Theme.radius_pill;
+                                background: root.connected ? #b8bb2622 : #fb493422;
+                                border-width: 1px;
+                                border-color: root.connected ? #b8bb2666 : #fb493466;
+                                height: 28px;
 
-                                VerticalLayout {
+                                HorizontalLayout {
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+                                    spacing: 6px;
                                     alignment: center;
-                                    Rectangle {
-                                        width: 6px;
-                                        height: 6px;
-                                        border-radius: 3px;
-                                        background: root.connected ? Theme.success : Theme.text_muted;
+
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Rectangle {
+                                            width: 6px;
+                                            height: 6px;
+                                            border-radius: 3px;
+                                            background: root.connected ? Theme.success : Theme.danger;
+                                        }
+                                    }
+
+                                    Text {
+                                        text: root.connected ? "Connected" : "Disconnected";
+                                        color: root.connected ? Theme.success : Theme.danger;
+                                        font-size: 12px;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            if root.connected : Rectangle {
+                                border-radius: Theme.radius_md;
+                                background: Theme.bg_pill;
+                                border-width: 1px;
+                                border-color: Theme.border;
+                                height: 30px;
+
+                                HorizontalLayout {
+                                    padding-left: 12px;
+                                    padding-right: 12px;
+
+                                    Text {
+                                        text: "Disconnect";
+                                        color: Theme.text_primary;
+                                        font-size: 12px;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
                                     }
                                 }
 
-                                Text {
-                                    text: root.connected ? "Connected" : "Offline";
-                                    color: root.connected ? Theme.success : Theme.text_secondary;
-                                    font-size: 12px;
-                                    font-weight: 600;
-                                    vertical-alignment: center;
-                                }
-                            }
-                        }
-
-                        if root.connected : Rectangle {
-                            border-radius: Theme.radius_md;
-                            background: Theme.bg_input;
-                            border-width: 1px;
-                            border-color: Theme.border;
-                            height: 32px;
-
-                            HorizontalLayout {
-                                padding-left: 14px;
-                                padding-right: 14px;
-
-                                Text {
-                                    text: "Disconnect";
-                                    color: Theme.text_secondary;
-                                    font-size: 12px;
-                                    font-weight: 600;
-                                    vertical-alignment: center;
-                                }
-                            }
-
-                            TouchArea {
-                                clicked => {
-                                    root.disconnect_clicked();
+                                TouchArea {
+                                    clicked => {
+                                        root.disconnect_clicked();
+                                    }
                                 }
                             }
                         }
@@ -201,14 +212,15 @@ export component DashboardPage inherits ScrollView {
                 color: Theme.text_muted;
                 font-size: 11px;
                 font-weight: 700;
-                letter-spacing: 1px;
+                letter-spacing: 1.5px;
             }
 
             HorizontalLayout {
-                spacing: 14px;
+                spacing: 12px;
+                height: 76px;
 
                 // Left Bud
-                if root.battery_left >= 0 || root.battery_percent < 0 : BatteryPod {
+                if root.battery_left >= 0 || (root.battery_percent < 0 && root.vendor != "Bowers & Wilkins") : BatteryPod {
                     label: "Left Bud";
                     pod_type: "left";
                     percent: root.battery_left;
@@ -217,7 +229,7 @@ export component DashboardPage inherits ScrollView {
                 }
 
                 // Right Bud
-                if root.battery_right >= 0 || root.battery_percent < 0 : BatteryPod {
+                if root.battery_right >= 0 || (root.battery_percent < 0 && root.vendor != "Bowers & Wilkins") : BatteryPod {
                     label: "Right Bud";
                     pod_type: "right";
                     percent: root.battery_right;
@@ -226,7 +238,7 @@ export component DashboardPage inherits ScrollView {
                 }
 
                 // Charging Case
-                if root.battery_case >= 0 || root.battery_percent < 0 : BatteryPod {
+                if root.battery_case >= 0 : BatteryPod {
                     label: "Charging Case";
                     pod_type: "case";
                     percent: root.battery_case;
@@ -235,7 +247,7 @@ export component DashboardPage inherits ScrollView {
                 }
 
                 // Over-ear Single Battery
-                if root.battery_percent >= 0 && root.battery_left < 0 && root.battery_right < 0 : BatteryPod {
+                if (root.battery_percent >= 0 && root.battery_left < 0 && root.battery_right < 0) || (root.vendor == "Bowers & Wilkins" && root.battery_percent < 0) : BatteryPod {
                     label: "Headphones Battery";
                     pod_type: "headphone";
                     percent: root.battery_percent;
@@ -255,18 +267,22 @@ export component DashboardPage inherits ScrollView {
                 color: Theme.text_muted;
                 font-size: 11px;
                 font-weight: 700;
-                letter-spacing: 1px;
+                letter-spacing: 1.5px;
             }
 
             HorizontalLayout {
                 spacing: 12px;
+                height: 64px;
 
                 AncModeCard {
                     mode_id: "off";
                     title: "Off";
                     description: "Passive seal";
                     is_active: root.noise_mode == "off";
-                    clicked => { root.set_anc("off"); }
+                    clicked => {
+                        root.noise_mode = "off";
+                        root.set_anc("off");
+                    }
                 }
 
                 AncModeCard {
@@ -274,7 +290,10 @@ export component DashboardPage inherits ScrollView {
                     title: "Noise Cancelling";
                     description: "Active attenuation";
                     is_active: root.noise_mode == "noise_cancellation" || root.noise_mode == "anc" || root.noise_mode == "high";
-                    clicked => { root.set_anc("anc"); }
+                    clicked => {
+                        root.noise_mode = "anc";
+                        root.set_anc("anc");
+                    }
                 }
 
                 AncModeCard {
@@ -282,7 +301,10 @@ export component DashboardPage inherits ScrollView {
                     title: "Transparency";
                     description: "Passthrough audio";
                     is_active: root.noise_mode == "transparency" || root.noise_mode == "ambient" || root.noise_mode == "low";
-                    clicked => { root.set_anc("ambient"); }
+                    clicked => {
+                        root.noise_mode = "ambient";
+                        root.set_anc("ambient");
+                    }
                 }
 
                 if root.vendor == "Apple" : AncModeCard {
@@ -290,7 +312,10 @@ export component DashboardPage inherits ScrollView {
                     title: "Adaptive Audio";
                     description: "Dynamic acoustic blend";
                     is_active: root.noise_mode == "adaptive";
-                    clicked => { root.set_anc("adaptive"); }
+                    clicked => {
+                        root.noise_mode = "adaptive";
+                        root.set_anc("adaptive");
+                    }
                 }
 
                 if root.vendor == "Bowers & Wilkins" : AncModeCard {
@@ -298,7 +323,10 @@ export component DashboardPage inherits ScrollView {
                     title: "Auto / Wind";
                     description: "Outdoor wind filter";
                     is_active: root.noise_mode == "wind" || root.noise_mode == "auto";
-                    clicked => { root.set_anc("auto"); }
+                    clicked => {
+                        root.noise_mode = "auto";
+                        root.set_anc("auto");
+                    }
                 }
             }
         }
@@ -313,7 +341,7 @@ export component DashboardPage inherits ScrollView {
                 color: Theme.text_muted;
                 font-size: 11px;
                 font-weight: 700;
-                letter-spacing: 1px;
+                letter-spacing: 1.5px;
             }
 
             VerticalLayout {

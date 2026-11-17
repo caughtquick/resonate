@@ -1,5 +1,4 @@
 import { Theme } from "../theme.slint";
-import { Switch } from "std-widgets.slint";
 
 export component SettingSwitchRow inherits Rectangle {
     in property <string> icon_name: "settings";
@@ -13,38 +12,45 @@ export component SettingSwitchRow inherits Rectangle {
     border-radius: Theme.radius_md;
     border-width: 1px;
     border-color: Theme.border;
-    height: 64px;
+    height: 60px;
 
     animate background { duration: 150ms; }
 
     HorizontalLayout {
-        padding-left: 18px;
-        padding-right: 18px;
-        spacing: 16px;
+        padding-left: 16px;
+        padding-right: 16px;
+        spacing: 14px;
         alignment: space-between;
 
         HorizontalLayout {
-            spacing: 14px;
+            spacing: 12px;
             alignment: start;
 
-            // Icon bubble
-            Rectangle {
-                width: 36px;
-                height: 36px;
-                border-radius: Theme.radius_sm;
-                background: root.checked ? Theme.accent_subtle : Theme.bg_input;
-                border-width: 1px;
-                border-color: root.checked ? Theme.accent : Theme.border;
+            // Icon box with tinted background - centered vertically
+            VerticalLayout {
+                alignment: center;
 
-                Image {
-                    source: root.icon_name == "play-pause" ? @image-url("../../assets/icons/play-pause.svg") :
-                            (root.icon_name == "message" ? @image-url("../../assets/icons/message.svg") :
-                            (root.icon_name == "sensor" ? @image-url("../../assets/icons/sensor.svg") :
-                            (root.icon_name == "earbud" ? @image-url("../../assets/icons/earbud-left.svg") :
-                            @image-url("../../assets/icons/settings.svg"))));
-                    width: 16px;
-                    height: 16px;
-                    colorize: root.checked ? Theme.accent_hover : Theme.text_secondary;
+                Rectangle {
+                    width: 36px;
+                    height: 36px;
+                    border-radius: Theme.radius_sm;
+                    background: root.checked ? Theme.icon_bg_amber : Theme.bg_input;
+                    border-width: 1px;
+                    border-color: root.checked ? Theme.accent : Theme.border;
+
+                    Image {
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                        width: 20px;
+                        height: 20px;
+                        image-fit: contain;
+                        source: root.icon_name == "play-pause" ? @image-url("../../assets/icons/play-pause.svg") :
+                                (root.icon_name == "message" ? @image-url("../../assets/icons/message.svg") :
+                                (root.icon_name == "sensor" ? @image-url("../../assets/icons/sensor.svg") :
+                                (root.icon_name == "earbud" ? @image-url("../../assets/icons/earbud-left.svg") :
+                                @image-url("../../assets/icons/settings.svg"))));
+                        colorize: root.checked ? Theme.accent : Theme.text_muted;
+                    }
                 }
             }
 
@@ -56,7 +62,7 @@ export component SettingSwitchRow inherits Rectangle {
                     text: root.title;
                     color: root.enabled ? Theme.text_primary : Theme.text_disabled;
                     font-size: 13px;
-                    font-weight: 600;
+                    font-weight: 700;
                 }
 
                 Text {
@@ -67,13 +73,32 @@ export component SettingSwitchRow inherits Rectangle {
             }
         }
 
+        // Custom Gruvbox Toggle Switch
         VerticalLayout {
             alignment: center;
-            Switch {
-                checked <=> root.checked;
-                enabled: root.enabled;
-                toggled => {
-                    root.toggled(self.checked);
+
+            Rectangle {
+                width: 44px;
+                height: 24px;
+                border-radius: 12px;
+                background: root.checked ? Theme.success : #3c3836;
+                border-width: 1px;
+                border-color: root.checked ? Theme.success : #504945;
+
+                animate background { duration: 150ms; }
+                animate border-color { duration: 150ms; }
+
+                // Knob
+                Rectangle {
+                    x: root.checked ? parent.width - self.width - 3px : 3px;
+                    y: 2px;
+                    width: 18px;
+                    height: 18px;
+                    border-radius: 9px;
+                    background: root.checked ? #1d2021 : #ebdbb2;
+
+                    animate x { duration: 150ms; easing: ease-out; }
+                    animate background { duration: 150ms; }
                 }
             }
         }

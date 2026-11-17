@@ -64,7 +64,7 @@ export component DiagnosticsPage inherits ScrollView {
                             width: 44px;
                             height: 44px;
                             border-radius: Theme.radius_md;
-                            background: root.daemon_running ? #10b98122 : #ef444422;
+                            background: root.daemon_running ? #b8bb2622 : #fb493422;
 
                             Image {
                                 source: @image-url("../../assets/icons/activity.svg");
@@ -90,7 +90,7 @@ export component DiagnosticsPage inherits ScrollView {
 
                                 Rectangle {
                                     border-radius: Theme.radius_pill;
-                                    background: root.daemon_running ? #10b98122 : #ef444422;
+                                    background: root.daemon_running ? #b8bb2622 : #fb493422;
                                     height: 20px;
 
                                     HorizontalLayout {
@@ -132,7 +132,7 @@ export component DiagnosticsPage inherits ScrollView {
 
                                 Text {
                                     text: "Start Daemon";
-                                    color: #ffffff;
+                                    color: #1d2021;
                                     font-size: 12px;
                                     font-weight: 600;
                                     vertical-alignment: center;
@@ -167,9 +167,9 @@ export component DiagnosticsPage inherits ScrollView {
 
                         if root.daemon_running : Rectangle {
                             border-radius: Theme.radius_md;
-                            background: #ef444422;
+                            background: #fb493422;
                             border-width: 1px;
-                            border-color: #ef444444;
+                            border-color: #fb493444;
                             height: 34px;
 
                             HorizontalLayout {

@@ -4,7 +4,7 @@
 //! switching Active Noise Cancellation listening modes, tuning hardware equalizers,
 //! managing multipoint connections, and supervising the background daemon.
 
-slint::include_modules!();
+use resonate::gui::{DeviceEntry, LogItem, MainWindow};
 
 use futures_lite::stream::StreamExt;
 use resonate::gui::dbus::{parse_eq_gains, ResonateDbusClient, ResonateStatusDto};
@@ -49,9 +49,103 @@ enum GuiCommand {
     RestartDaemon,
 }
 
+const DESKTOP_ENTRY_TEMPLATE: &str = include_str!("../assets/resonate-gui.desktop");
+const ICON_SVG: &str = include_str!("../assets/icons/headphone.svg");
+
+fn print_help() {
+    println!("Resonate Studio - Linux Bluetooth Headphone Management GUI\n");
+    println!("USAGE:");
+    println!("    resonate-gui [OPTIONS]\n");
+    println!("OPTIONS:");
+    println!("    --install-desktop     Register Resonate Studio in your application menu (~/.local/share/applications)");
+    println!("    --uninstall-desktop   Remove Resonate Studio from your application menu");
+    println!("    -h, --help            Print help information");
+}
+
+fn install_desktop_entry() -> Result<(), Box<dyn std::error::Error>> {
+    let home = std::env::var("HOME").map_err(|_| "HOME environment variable not set")?;
+    let apps_dir = std::path::PathBuf::from(&home).join(".local/share/applications");
+    let icons_dir = std::path::PathBuf::from(&home).join(".local/share/icons/hicolor/scalable/apps");
+
+    std::fs::create_dir_all(&apps_dir)?;
+    std::fs::create_dir_all(&icons_dir)?;
+
+    let icon_path = icons_dir.join("resonate-gui.svg");
+    std::fs::write(&icon_path, ICON_SVG)?;
+    println!("Installed icon: {}", icon_path.display());
+
+    let exec_path = std::env::current_exe()?
+        .canonicalize()?
+        .to_string_lossy()
+        .to_string();
+
+    let desktop_content = DESKTOP_ENTRY_TEMPLATE
+        .replace("Exec=resonate-gui", &format!("Exec={}", exec_path))
+        .replace("Icon=audio-headphones", "Icon=resonate-gui");
+
+    let desktop_path = apps_dir.join("resonate-gui.desktop");
+    std::fs::write(&desktop_path, desktop_content)?;
+    println!("Installed desktop entry: {}", desktop_path.display());
+    println!("Executable configured: {}", exec_path);
+
+    if let Ok(mut child) = std::process::Command::new("update-desktop-database")
+        .arg(&apps_dir)
+        .spawn()
+    {
+        let _ = child.wait();
+        println!("Updated desktop application database.");
+    }
+
+    println!("\nResonate Studio successfully registered! You can now launch it from your desktop launcher.");
+    Ok(())
+}
+
+fn uninstall_desktop_entry() -> Result<(), Box<dyn std::error::Error>> {
+    let home = std::env::var("HOME").map_err(|_| "HOME environment variable not set")?;
+    let desktop_path = std::path::PathBuf::from(&home).join(".local/share/applications/resonate-gui.desktop");
+    let icon_path = std::path::PathBuf::from(&home).join(".local/share/icons/hicolor/scalable/apps/resonate-gui.svg");
+
+    if desktop_path.exists() {
+        std::fs::remove_file(&desktop_path)?;
+        println!("Removed: {}", desktop_path.display());
+    }
+    if icon_path.exists() {
+        std::fs::remove_file(&icon_path)?;
+        println!("Removed: {}", icon_path.display());
+    }
+
+    let apps_dir = std::path::PathBuf::from(&home).join(".local/share/applications");
+    if let Ok(mut child) = std::process::Command::new("update-desktop-database")
+        .arg(&apps_dir)
+        .spawn()
+    {
+        let _ = child.wait();
+    }
+
+    println!("Resonate Studio desktop entry successfully uninstalled.");
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--install-desktop") {
+        return install_desktop_entry();
+    }
+    if args.iter().any(|a| a == "--uninstall-desktop") {
+        return uninstall_desktop_entry();
+    }
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print_help();
+        return Ok(());
+    }
+
     let main_window = MainWindow::new()?;
+
+    // Initialize and watch user theme from ~/.config/resonate-studio/config.toml
+    let studio_config = resonate::gui::theme::ensure_config_file();
+    resonate::gui::theme::apply_theme_to_ui(&main_window, &studio_config);
+    resonate::gui::theme::start_theme_watcher(main_window.as_weak());
 
     // Thread-safe log store
     let logs_store: Arc<Mutex<Vec<LogItem>>> = Arc::new(Mutex::new(vec![LogItem {
@@ -407,126 +501,126 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let tx = cmd_tx.clone();
         main_window.on_set_anc(move |mode| {
-            let _ = tx.blocking_send(GuiCommand::SetAnc(mode.to_string()));
+            let _ = tx.try_send(GuiCommand::SetAnc(mode.to_string()));
         });
     }
 
     {
         let tx = cmd_tx.clone();
         main_window.on_set_auto_pause(move |val| {
-            let _ = tx.blocking_send(GuiCommand::SetAutoPause(val));
+            let _ = tx.try_send(GuiCommand::SetAutoPause(val));
         });
     }
 
     {
         let tx = cmd_tx.clone();
         main_window.on_set_conv_aware(move |val| {
-            let _ = tx.blocking_send(GuiCommand::SetConversationAwareness(val));
+            let _ = tx.try_send(GuiCommand::SetConversationAwareness(val));
         });
     }
 
     {
         let tx = cmd_tx.clone();
         main_window.on_set_one_bud_anc(move |val| {
-            let _ = tx.blocking_send(GuiCommand::SetOneBudAnc(val));
+            let _ = tx.try_send(GuiCommand::SetOneBudAnc(val));
         });
     }
 
     {
         let tx = cmd_tx.clone();
         main_window.on_set_ear_detection(move |val| {
-            let _ = tx.blocking_send(GuiCommand::SetWearSensor(val));
+            let _ = tx.try_send(GuiCommand::SetWearSensor(val));
         });
     }
 
     {
         let tx = cmd_tx.clone();
         main_window.on_set_equalizer(move |bass, treble| {
-            let _ = tx.blocking_send(GuiCommand::SetEqualizer(bass, treble));
+            let _ = tx.try_send(GuiCommand::SetEqualizer(bass, treble));
         });
     }
 
     {
         let tx = cmd_tx.clone();
         main_window.on_apply_preset(move |preset| {
-            let _ = tx.blocking_send(GuiCommand::ApplyPreset(preset.to_string()));
+            let _ = tx.try_send(GuiCommand::ApplyPreset(preset.to_string()));
         });
     }
 
     {
         let tx = cmd_tx.clone();
         main_window.on_set_mic_mode(move |mode| {
-            let _ = tx.blocking_send(GuiCommand::SetMicrophoneMode(mode.to_string()));
+            let _ = tx.try_send(GuiCommand::SetMicrophoneMode(mode.to_string()));
         });
     }
 
     {
         let tx = cmd_tx.clone();
         main_window.on_set_chime_volume(move |vol| {
-            let _ = tx.blocking_send(GuiCommand::SetChimeVolume(vol as u8));
+            let _ = tx.try_send(GuiCommand::SetChimeVolume(vol as u8));
         });
     }
 
     {
         let tx = cmd_tx.clone();
         main_window.on_set_standby(move |val| {
-            let _ = tx.blocking_send(GuiCommand::SetStandby(val.to_string()));
+            let _ = tx.try_send(GuiCommand::SetStandby(val.to_string()));
         });
     }
 
     {
         let tx = cmd_tx.clone();
         main_window.on_set_action_button(move |action| {
-            let _ = tx.blocking_send(GuiCommand::SetActionButton(action.to_string()));
+            let _ = tx.try_send(GuiCommand::SetActionButton(action.to_string()));
         });
     }
 
     {
         let tx = cmd_tx.clone();
         main_window.on_connect_device(move |addr| {
-            let _ = tx.blocking_send(GuiCommand::ConnectDevice(addr.to_string()));
+            let _ = tx.try_send(GuiCommand::ConnectDevice(addr.to_string()));
         });
     }
 
     {
         let tx = cmd_tx.clone();
         main_window.on_disconnect_device(move |_| {
-            let _ = tx.blocking_send(GuiCommand::DisconnectDevice);
+            let _ = tx.try_send(GuiCommand::DisconnectDevice);
         });
     }
 
     {
         let tx = cmd_tx.clone();
         main_window.on_connect_multipoint(move |addr| {
-            let _ = tx.blocking_send(GuiCommand::ConnectMultipoint(addr.to_string()));
+            let _ = tx.try_send(GuiCommand::ConnectMultipoint(addr.to_string()));
         });
     }
 
     {
         let tx = cmd_tx.clone();
         main_window.on_refresh_devices(move || {
-            let _ = tx.blocking_send(GuiCommand::RefreshDevices);
+            let _ = tx.try_send(GuiCommand::RefreshDevices);
         });
     }
 
     {
         let tx = cmd_tx.clone();
         main_window.on_start_daemon(move || {
-            let _ = tx.blocking_send(GuiCommand::StartDaemon);
+            let _ = tx.try_send(GuiCommand::StartDaemon);
         });
     }
 
     {
         let tx = cmd_tx.clone();
         main_window.on_stop_daemon(move || {
-            let _ = tx.blocking_send(GuiCommand::StopDaemon);
+            let _ = tx.try_send(GuiCommand::StopDaemon);
         });
     }
 
     {
         let tx = cmd_tx.clone();
         main_window.on_restart_daemon(move || {
-            let _ = tx.blocking_send(GuiCommand::RestartDaemon);
+            let _ = tx.try_send(GuiCommand::RestartDaemon);
         });
     }
 

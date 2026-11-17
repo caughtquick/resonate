@@ -4,10 +4,12 @@ import { Slider, ScrollView } from "std-widgets.slint";
 
 export component SettingsPage inherits ScrollView {
     in property <string> vendor: "Apple";
+    in property <bool> connected: true;
     in property <string> mic_mode: "auto";
     in-out property <int> chime_volume: 80;
     in property <int> standby_minutes: 15;
     in property <int> wear_sensitivity: 1;
+    in property <string> action_button: "anc";
 
     in-out property <bool> auto_pause: true;
     in-out property <bool> conv_aware: false;
@@ -47,8 +49,84 @@ export component SettingsPage inherits ScrollView {
             }
         }
 
-        // Section: Apple / Beats Personalization
+        // Section: Global Smart Features
         VerticalLayout {
+            spacing: 12px;
+
+            Text {
+                text: "SMART FEATURES";
+                color: Theme.text_muted;
+                font-size: 11px;
+                font-weight: 700;
+                letter-spacing: 1px;
+            }
+
+            SettingSwitchRow {
+                icon_name: "play-pause";
+                title: "Smart Auto-Pause (MPRIS)";
+                description: "Automatically pauses media playback when you remove an earbud/headphone and resumes on re-insert";
+                checked <=> root.auto_pause;
+                toggled(val) => { root.set_auto_pause(val); }
+            }
+        }
+
+        // Vendor filtering note
+        if root.connected && root.vendor == "Apple" : Rectangle {
+            background: Theme.bg_card;
+            border-radius: Theme.radius_md;
+            border-width: 1px;
+            border-color: Theme.border;
+
+            HorizontalLayout {
+                padding: 14px;
+                spacing: 12px;
+                alignment: start;
+
+                Text {
+                    text: "ℹ";
+                    color: Theme.accent;
+                    font-size: 16px;
+                    vertical-alignment: center;
+                }
+
+                Text {
+                    text: "Showing controls for Apple AirPods & Beats. Bowers & Wilkins hardware controls are hidden.";
+                    color: Theme.text_secondary;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        if root.connected && root.vendor == "Bowers & Wilkins" : Rectangle {
+            background: Theme.bg_card;
+            border-radius: Theme.radius_md;
+            border-width: 1px;
+            border-color: Theme.border;
+
+            HorizontalLayout {
+                padding: 14px;
+                spacing: 12px;
+                alignment: start;
+
+                Text {
+                    text: "ℹ";
+                    color: Theme.accent;
+                    font-size: 16px;
+                    vertical-alignment: center;
+                }
+
+                Text {
+                    text: "Showing controls for Bowers & Wilkins headphones. Apple & Beats hardware controls are hidden.";
+                    color: Theme.text_secondary;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // Section: Apple / Beats Personalization (Vendor Filtered)
+        if !root.connected || root.vendor == "Apple" : VerticalLayout {
             spacing: 12px;
 
             Text {
@@ -108,7 +186,7 @@ export component SettingsPage inherits ScrollView {
 
                                 Text {
                                     text: "Automatic (Optimal)";
-                                    color: root.mic_mode == "auto" ? #1d2021 : Theme.text_secondary;
+                                    color: root.mic_mode == "auto" ? Theme.bg_darkest : Theme.text_secondary;
                                     font-size: 12px;
                                     font-weight: 600;
                                     vertical-alignment: center;
@@ -132,7 +210,7 @@ export component SettingsPage inherits ScrollView {
 
                                 Text {
                                     text: "Always Left Earbud";
-                                    color: root.mic_mode == "left" ? #1d2021 : Theme.text_secondary;
+                                    color: root.mic_mode == "left" ? Theme.bg_darkest : Theme.text_secondary;
                                     font-size: 12px;
                                     font-weight: 600;
                                     vertical-alignment: center;
@@ -156,7 +234,7 @@ export component SettingsPage inherits ScrollView {
 
                                 Text {
                                     text: "Always Right Earbud";
-                                    color: root.mic_mode == "right" ? #1d2021 : Theme.text_secondary;
+                                    color: root.mic_mode == "right" ? Theme.bg_darkest : Theme.text_secondary;
                                     font-size: 12px;
                                     font-weight: 600;
                                     vertical-alignment: center;
@@ -187,14 +265,14 @@ export component SettingsPage inherits ScrollView {
                             spacing: 3px;
 
                             Text {
-                                text: "Tone & Chime Volume (AirPods Pro 2)";
+                                text: "Case & Earbud Tone Volume";
                                 color: Theme.text_primary;
                                 font-size: 14px;
                                 font-weight: 600;
                             }
 
                             Text {
-                                text: "Volume of audio alerts played by the charging case speaker and earbuds";
+                                text: "Alert tone chime volume emitted when opening the case or snapping onto charger";
                                 color: Theme.text_secondary;
                                 font-size: 12px;
                             }
@@ -220,10 +298,35 @@ export component SettingsPage inherits ScrollView {
                     }
                 }
             }
+
+            // Apple Hardware Switches
+            SettingSwitchRow {
+                icon_name: "sensor";
+                title: "Hardware Ear Detection";
+                description: "Enables optical and capacitive wear sensors to detect when earbuds are placed in ears";
+                checked <=> root.ear_detection;
+                toggled(val) => { root.set_ear_detection(val); }
+            }
+
+            SettingSwitchRow {
+                icon_name: "earbud";
+                title: "Single-Bud Noise Cancellation";
+                description: "Allows Active Noise Cancellation to remain engaged when wearing only one earbud";
+                checked <=> root.one_bud_anc;
+                toggled(val) => { root.set_one_bud_anc(val); }
+            }
+
+            SettingSwitchRow {
+                icon_name: "message";
+                title: "Conversation Awareness";
+                description: "Automatically lowers audio volume and enhances voices in front of you when speaking (AirPods Pro 2)";
+                checked <=> root.conv_aware;
+                toggled(val) => { root.set_conv_aware(val); }
+            }
         }
 
-        // Section: Bowers & Wilkins Hardware Controls
-        VerticalLayout {
+        // Section: Bowers & Wilkins Hardware Controls (Vendor Filtered)
+        if !root.connected || root.vendor == "Bowers & Wilkins" : VerticalLayout {
             spacing: 12px;
 
             Text {
@@ -278,8 +381,9 @@ export component SettingsPage inherits ScrollView {
 
                                 Text {
                                     text: "Never";
-                                    color: root.standby_minutes == 0 ? #1d2021 : Theme.text_secondary;
+                                    color: root.standby_minutes == 0 ? Theme.bg_darkest : Theme.text_secondary;
                                     font-size: 12px;
+                                    font-weight: 600;
                                     vertical-alignment: center;
                                 }
                             }
@@ -299,8 +403,9 @@ export component SettingsPage inherits ScrollView {
 
                                 Text {
                                     text: "10 Minutes";
-                                    color: root.standby_minutes == 10 ? #1d2021 : Theme.text_secondary;
+                                    color: root.standby_minutes == 10 ? Theme.bg_darkest : Theme.text_secondary;
                                     font-size: 12px;
+                                    font-weight: 600;
                                     vertical-alignment: center;
                                 }
                             }
@@ -320,8 +425,9 @@ export component SettingsPage inherits ScrollView {
 
                                 Text {
                                     text: "15 Minutes";
-                                    color: root.standby_minutes == 15 ? #1d2021 : Theme.text_secondary;
+                                    color: root.standby_minutes == 15 ? Theme.bg_darkest : Theme.text_secondary;
                                     font-size: 12px;
+                                    font-weight: 600;
                                     vertical-alignment: center;
                                 }
                             }
@@ -341,8 +447,9 @@ export component SettingsPage inherits ScrollView {
 
                                 Text {
                                     text: "30 Minutes";
-                                    color: root.standby_minutes == 30 ? #1d2021 : Theme.text_secondary;
+                                    color: root.standby_minutes == 30 ? Theme.bg_darkest : Theme.text_secondary;
                                     font-size: 12px;
+                                    font-weight: 600;
                                     vertical-alignment: center;
                                 }
                             }
@@ -352,7 +459,7 @@ export component SettingsPage inherits ScrollView {
                 }
             }
 
-            // Quick Action Button Card
+            // Quick Action Button Card (Dynamic Active State)
             Rectangle {
                 background: Theme.bg_card;
                 border-radius: Theme.radius_md;
@@ -385,7 +492,9 @@ export component SettingsPage inherits ScrollView {
 
                         Rectangle {
                             border-radius: Theme.radius_pill;
-                            background: Theme.accent;
+                            background: root.action_button == "anc" ? Theme.accent : Theme.bg_input;
+                            border-width: 1px;
+                            border-color: root.action_button == "anc" ? Theme.accent : Theme.border;
                             height: 34px;
 
                             HorizontalLayout {
@@ -394,7 +503,7 @@ export component SettingsPage inherits ScrollView {
 
                                 Text {
                                     text: "Toggle Listening Modes (ANC)";
-                                    color: #1d2021;
+                                    color: root.action_button == "anc" ? Theme.bg_darkest : Theme.text_secondary;
                                     font-size: 12px;
                                     font-weight: 600;
                                     vertical-alignment: center;
@@ -405,9 +514,9 @@ export component SettingsPage inherits ScrollView {
 
                         Rectangle {
                             border-radius: Theme.radius_pill;
-                            background: Theme.bg_input;
+                            background: root.action_button == "voice" ? Theme.accent : Theme.bg_input;
                             border-width: 1px;
-                            border-color: Theme.border;
+                            border-color: root.action_button == "voice" ? Theme.accent : Theme.border;
                             height: 34px;
 
                             HorizontalLayout {
@@ -416,13 +525,135 @@ export component SettingsPage inherits ScrollView {
 
                                 Text {
                                     text: "Trigger Voice Assistant";
-                                    color: Theme.text_secondary;
+                                    color: root.action_button == "voice" ? Theme.bg_darkest : Theme.text_secondary;
                                     font-size: 12px;
                                     font-weight: 600;
                                     vertical-alignment: center;
                                 }
                             }
                             TouchArea { clicked => { root.set_action_button("voice"); } }
+                        }
+                    }
+                }
+            }
+
+            // Hardware Wear Sensor Sensitivity Card
+            Rectangle {
+                background: Theme.bg_card;
+                border-radius: Theme.radius_md;
+                border-width: 1px;
+                border-color: Theme.border;
+
+                VerticalLayout {
+                    padding: 18px;
+                    spacing: 12px;
+
+                    VerticalLayout {
+                        spacing: 3px;
+
+                        Text {
+                            text: "Hardware Wear Sensor Sensitivity";
+                            color: Theme.text_primary;
+                            font-size: 14px;
+                            font-weight: 600;
+                        }
+
+                        Text {
+                            text: "Controls physical on-head sensor threshold for Bowers & Wilkins over-ear detection";
+                            color: Theme.text_secondary;
+                            font-size: 12px;
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 10px;
+
+                        Rectangle {
+                            border-radius: Theme.radius_pill;
+                            background: (!root.ear_detection || root.wear_sensitivity < 0) ? Theme.accent : Theme.bg_input;
+                            border-width: 1px;
+                            border-color: (!root.ear_detection || root.wear_sensitivity < 0) ? Theme.accent : Theme.border;
+                            height: 32px;
+
+                            HorizontalLayout {
+                                padding-left: 14px;
+                                padding-right: 14px;
+
+                                Text {
+                                    text: "Disabled";
+                                    color: (!root.ear_detection || root.wear_sensitivity < 0) ? Theme.bg_darkest : Theme.text_secondary;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            TouchArea { clicked => { root.set_wear_sensitivity("off"); } }
+                        }
+
+                        Rectangle {
+                            border-radius: Theme.radius_pill;
+                            background: (root.ear_detection && root.wear_sensitivity == 0) ? Theme.accent : Theme.bg_input;
+                            border-width: 1px;
+                            border-color: (root.ear_detection && root.wear_sensitivity == 0) ? Theme.accent : Theme.border;
+                            height: 32px;
+
+                            HorizontalLayout {
+                                padding-left: 14px;
+                                padding-right: 14px;
+
+                                Text {
+                                    text: "Low";
+                                    color: (root.ear_detection && root.wear_sensitivity == 0) ? Theme.bg_darkest : Theme.text_secondary;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            TouchArea { clicked => { root.set_wear_sensitivity("low"); } }
+                        }
+
+                        Rectangle {
+                            border-radius: Theme.radius_pill;
+                            background: (root.ear_detection && root.wear_sensitivity == 1) ? Theme.accent : Theme.bg_input;
+                            border-width: 1px;
+                            border-color: (root.ear_detection && root.wear_sensitivity == 1) ? Theme.accent : Theme.border;
+                            height: 32px;
+
+                            HorizontalLayout {
+                                padding-left: 14px;
+                                padding-right: 14px;
+
+                                Text {
+                                    text: "Normal";
+                                    color: (root.ear_detection && root.wear_sensitivity == 1) ? Theme.bg_darkest : Theme.text_secondary;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            TouchArea { clicked => { root.set_wear_sensitivity("medium"); } }
+                        }
+
+                        Rectangle {
+                            border-radius: Theme.radius_pill;
+                            background: (root.ear_detection && root.wear_sensitivity == 2) ? Theme.accent : Theme.bg_input;
+                            border-width: 1px;
+                            border-color: (root.ear_detection && root.wear_sensitivity == 2) ? Theme.accent : Theme.border;
+                            height: 32px;
+
+                            HorizontalLayout {
+                                padding-left: 14px;
+                                padding-right: 14px;
+
+                                Text {
+                                    text: "High";
+                                    color: (root.ear_detection && root.wear_sensitivity == 2) ? Theme.bg_darkest : Theme.text_secondary;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            TouchArea { clicked => { root.set_wear_sensitivity("high"); } }
                         }
                     }
                 }

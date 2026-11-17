@@ -46,6 +46,7 @@ export component MainWindow inherits Window {
     in-out property <int> chime_volume: 80;
     in-out property <int> standby_minutes: 15;
     in-out property <int> wear_sensitivity: 1;
+    in-out property <string> action_button: "anc";
     in-out property <bool> auto_pause: true;
     in-out property <bool> conv_aware: false;
     in-out property <bool> one_bud_anc: false;
@@ -53,6 +54,7 @@ export component MainWindow inherits Window {
 
     // Multipoint & Devices
     in-out property <[DeviceEntry]> devices: [];
+    in-out property <[DeviceEntry]> multipoint_slots: [];
 
     // Diagnostics & Service
     in-out property <string> daemon_status: "Active (Running)";
@@ -71,9 +73,11 @@ export component MainWindow inherits Window {
     callback set_chime_volume(int);
     callback set_standby(string);
     callback set_action_button(string);
+    callback set_wear_sensitivity(string);
     callback connect_device(string);
     callback disconnect_device(string);
     callback connect_multipoint(string);
+    callback disconnect_multipoint(string);
     callback refresh_devices();
     callback start_daemon();
     callback stop_daemon();
@@ -541,10 +545,12 @@ export component MainWindow inherits Window {
 
             if root.active_page == 2 : SettingsPage {
                 vendor: root.vendor;
+                connected: root.connected;
                 mic_mode: root.mic_mode;
                 chime_volume <=> root.chime_volume;
                 standby_minutes: root.standby_minutes;
                 wear_sensitivity: root.wear_sensitivity;
+                action_button: root.action_button;
                 auto_pause <=> root.auto_pause;
                 conv_aware <=> root.conv_aware;
                 one_bud_anc <=> root.one_bud_anc;
@@ -553,6 +559,7 @@ export component MainWindow inherits Window {
                 set_chime_volume(v) => { root.set_chime_volume(v); }
                 set_standby(s) => { root.set_standby(s); }
                 set_action_button(a) => { root.set_action_button(a); }
+                set_wear_sensitivity(s) => { root.set_wear_sensitivity(s); }
                 set_auto_pause(v) => { root.set_auto_pause(v); }
                 set_conv_aware(v) => { root.set_conv_aware(v); }
                 set_one_bud_anc(v) => { root.set_one_bud_anc(v); }
@@ -561,10 +568,12 @@ export component MainWindow inherits Window {
 
             if root.active_page == 3 : MultipointPage {
                 devices: root.devices;
+                multipoint_slots: root.multipoint_slots;
                 is_connected_bw: root.vendor == "Bowers & Wilkins";
                 connect_device(addr) => { root.connect_device(addr); }
                 disconnect_device(addr) => { root.disconnect_device(addr); }
                 connect_multipoint(addr) => { root.connect_multipoint(addr); }
+                disconnect_multipoint(addr) => { root.disconnect_multipoint(addr); }
                 refresh_devices => { root.refresh_devices(); }
             }
 

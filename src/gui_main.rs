@@ -40,9 +40,11 @@ enum GuiCommand {
     SetChimeVolume(u8),
     SetStandby(String),
     SetActionButton(String),
+    SetWearSensitivity(String),
     ConnectDevice(String),
     DisconnectDevice,
     ConnectMultipoint(String),
+    DisconnectMultipoint(String),
     RefreshDevices,
     StartDaemon,
     StopDaemon,
@@ -105,6 +107,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // Initial fetch of device status
                     if let Ok(status) = client.get_status().await {
                         update_ui_status(&weak_ui, &status);
+                        if status.vendor == "Bowers & Wilkins" {
+                            refresh_multipoint_slots(&weak_ui, &client).await;
+                        }
                     }
 
                     // Initial fetch of paired devices (supported headphones only)
@@ -433,6 +438,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                 }
+                GuiCommand::SetWearSensitivity(sens) => {
+                    if let Some(c) = client_res.as_ref() {
+                        let res = c.set_wear_sensor_string(&sens).await;
+                        let ok = res.as_ref().map(|(b, _)| *b).unwrap_or(false);
+                        log_action(
+                            &weak_ui_cmd,
+                            &logs_store_cmd,
+                            &format!("Set Wear Sensitivity: {}", sens),
+                            ok,
+                        );
+                        if let Ok(status) = c.get_status().await {
+                            update_ui_status(&weak_ui_cmd, &status);
+                        }
+                    }
+                }
                 GuiCommand::ConnectDevice(addr) => {
                     if let Some(c) = client_res.as_ref() {
                         let res = c.connect_device(&addr).await;
@@ -445,6 +465,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         );
                         if let Ok(status) = c.get_status().await {
                             update_ui_status(&weak_ui_cmd, &status);
+                            if status.vendor == "Bowers & Wilkins" {
+                                refresh_multipoint_slots(&weak_ui_cmd, c).await;
+                            }
                         }
                         if let Ok(devs) = c.list_devices().await {
                             let dev_entries: Vec<DeviceEntry> = devs
@@ -514,6 +537,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             &format!("Connect Multipoint: {}", target),
                             ok,
                         );
+                        refresh_multipoint_slots(&weak_ui_cmd, c).await;
+                    }
+                }
+                GuiCommand::DisconnectMultipoint(target) => {
+                    if let Some(c) = client_res.as_ref() {
+                        let res = c.disconnect_multipoint(&target).await;
+                        let ok = res.as_ref().map(|(b, _)| *b).unwrap_or(false);
+                        log_action(
+                            &weak_ui_cmd,
+                            &logs_store_cmd,
+                            &format!("Disconnect Multipoint: {}", target),
+                            ok,
+                        );
+                        refresh_multipoint_slots(&weak_ui_cmd, c).await;
                     }
                 }
                 GuiCommand::RefreshDevices => {
@@ -539,6 +576,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 ui.set_devices(ModelRc::from(model));
                             });
                         }
+                        refresh_multipoint_slots(&weak_ui_cmd, c).await;
                     }
                 }
                 GuiCommand::StartDaemon => {
@@ -652,6 +690,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     {
         let tx = cmd_tx.clone();
+        main_window.on_set_wear_sensitivity(move |sens| {
+            let _ = tx.try_send(GuiCommand::SetWearSensitivity(sens.to_string()));
+        });
+    }
+
+    {
+        let tx = cmd_tx.clone();
         main_window.on_connect_device(move |addr| {
             let _ = tx.try_send(GuiCommand::ConnectDevice(addr.to_string()));
         });
@@ -668,6 +713,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let tx = cmd_tx.clone();
         main_window.on_connect_multipoint(move |addr| {
             let _ = tx.try_send(GuiCommand::ConnectMultipoint(addr.to_string()));
+        });
+    }
+
+    {
+        let tx = cmd_tx.clone();
+        main_window.on_disconnect_multipoint(move |addr| {
+            let _ = tx.try_send(GuiCommand::DisconnectMultipoint(addr.to_string()));
         });
     }
 
@@ -745,12 +797,53 @@ fn update_ui_status(weak: &slint::Weak<MainWindow>, s: &ResonateStatusDto) {
         ui.set_mic_mode(status_clone.mic_mode.into());
         ui.set_chime_volume(status_clone.chime_volume);
         ui.set_standby_minutes(status_clone.standby_minutes);
-        ui.set_wear_sensitivity(status_clone.wear_sensitivity.unwrap_or(1));
+        ui.set_wear_sensitivity(
+            status_clone
+                .wear_sensitivity
+                .unwrap_or(if status_clone.ear_detection { 1 } else { -1 }),
+        );
+        ui.set_action_button(status_clone.action_button.into());
 
         ui.set_auto_pause(status_clone.auto_pause);
         ui.set_conv_aware(status_clone.conversation_awareness);
         ui.set_one_bud_anc(status_clone.one_bud_anc);
         ui.set_ear_detection(status_clone.ear_detection);
+    });
+}
+
+/// Refreshes the Bowers & Wilkins multipoint slots from the D-Bus service.
+async fn refresh_multipoint_slots(weak: &slint::Weak<MainWindow>, client: &ResonateDbusClient) {
+    if let Ok((true, json_str)) = client.get_multipoint().await {
+        if let Ok(slots) =
+            serde_json::from_str::<Vec<resonate::gui::dbus::BwMultipointDeviceDto>>(&json_str)
+        {
+            let entries: Vec<DeviceEntry> = slots
+                .into_iter()
+                .map(|s| {
+                    let name = if s.name.is_empty() {
+                        format!("Slot #{}", s.id)
+                    } else {
+                        s.name
+                    };
+                    DeviceEntry {
+                        name: name.into(),
+                        address: s.address.into(),
+                        vendor: "Bowers & Wilkins".into(),
+                        connected: s.connected,
+                        is_multipoint: true,
+                    }
+                })
+                .collect();
+            let _ = weak.upgrade_in_event_loop(move |ui| {
+                let model = Rc::new(VecModel::from(entries));
+                ui.set_multipoint_slots(ModelRc::from(model));
+            });
+            return;
+        }
+    }
+    let _ = weak.upgrade_in_event_loop(|ui| {
+        let model = Rc::new(VecModel::<DeviceEntry>::default());
+        ui.set_multipoint_slots(ModelRc::from(model));
     });
 }
 

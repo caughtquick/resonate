@@ -331,19 +331,21 @@ impl BwAncWireProfile {
         }
     }
 
-    /// Translates a normalized mode string ("off", "anc", "transparency") into the wire integer.
+    /// Translates a normalized mode string ("off", "anc", "transparency", "wind") into the wire integer.
     pub fn to_wire_value(&self, mode: &str) -> u8 {
         match self {
             Self::Standard => match mode {
                 "off" => 0,
                 "anc" | "nc" | "on" => 1,
                 "transparency" | "ambient" | "passthrough" => 2,
+                "wind" | "auto" => 3,
                 _ => 1,
             },
             Self::OriginalPx8 => match mode {
                 "off" => 1,
                 "anc" | "nc" | "on" => 2,
                 "transparency" | "ambient" | "passthrough" => 3,
+                "wind" | "auto" => 4,
                 _ => 2,
             },
         }
@@ -356,12 +358,14 @@ impl BwAncWireProfile {
                 0 => "off",
                 1 => "anc",
                 2 => "transparency",
+                3 => "wind",
                 _ => "anc",
             },
             Self::OriginalPx8 => match val {
                 1 => "off",
                 2 => "anc",
                 3 => "transparency",
+                4 => "wind",
                 _ => "anc",
             },
         }
@@ -570,17 +574,21 @@ mod tests {
         assert_eq!(p.to_wire_value("off"), 1);
         assert_eq!(p.to_wire_value("anc"), 2);
         assert_eq!(p.to_wire_value("transparency"), 3);
+        assert_eq!(p.to_wire_value("wind"), 4);
         assert_eq!(p.from_wire_value(1), "off");
         assert_eq!(p.from_wire_value(2), "anc");
         assert_eq!(p.from_wire_value(3), "transparency");
+        assert_eq!(p.from_wire_value(4), "wind");
 
         let s = BwAncWireProfile::Standard;
         assert_eq!(s.to_wire_value("off"), 0);
         assert_eq!(s.to_wire_value("anc"), 1);
         assert_eq!(s.to_wire_value("transparency"), 2);
+        assert_eq!(s.to_wire_value("wind"), 3);
         assert_eq!(s.from_wire_value(0), "off");
         assert_eq!(s.from_wire_value(1), "anc");
         assert_eq!(s.from_wire_value(2), "transparency");
+        assert_eq!(s.from_wire_value(3), "wind");
     }
 
     #[test]

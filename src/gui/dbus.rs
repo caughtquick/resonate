@@ -51,8 +51,23 @@ pub struct ResonateStatusDto {
     pub chime_volume: i32,
     #[serde(rename = "standbyMinutes", default)]
     pub standby_minutes: i32,
+    #[serde(rename = "actionButton", default = "default_action_button")]
+    pub action_button: String,
     #[serde(rename = "equalizerPreset", default)]
     pub equalizer_preset: String,
+}
+
+fn default_action_button() -> String {
+    "anc".to_string()
+}
+
+/// A paired multipoint slot reported by Bowers & Wilkins headphones over BWRPC.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct BwMultipointDeviceDto {
+    pub id: usize,
+    pub name: String,
+    pub address: String,
+    pub connected: bool,
 }
 
 /// A paired device reported by BlueZ through Resonate.
@@ -221,6 +236,21 @@ impl ResonateDbusClient {
     /// Connects a paired multipoint device by index, MAC address, or name.
     pub async fn connect_multipoint(&self, target: &str) -> Result<(bool, String), zbus::Error> {
         self.proxy.call("ConnectMultipoint", &(target,)).await
+    }
+
+    /// Disconnects a paired multipoint device by index, MAC address, or name.
+    pub async fn disconnect_multipoint(&self, target: &str) -> Result<(bool, String), zbus::Error> {
+        self.proxy.call("DisconnectMultipoint", &(target,)).await
+    }
+
+    /// Queries paired multipoint slots from Bowers & Wilkins headphones over BWRPC.
+    pub async fn get_multipoint(&self) -> Result<(bool, String), zbus::Error> {
+        self.proxy.call("GetMultipoint", &()).await
+    }
+
+    /// Configures wear sensor state or sensitivity ("on", "off", "low", "medium", "high").
+    pub async fn set_wear_sensor_string(&self, action: &str) -> Result<(bool, String), zbus::Error> {
+        self.proxy.call("SetWearSensorString", &(action,)).await
     }
 
     /// Subscribes to the `StateChanged(s)` signal stream.

@@ -11,11 +11,13 @@ export struct DeviceEntry {
 
 export component MultipointPage inherits ScrollView {
     in property <[DeviceEntry]> devices: [];
+    in property <[DeviceEntry]> multipoint_slots: [];
     in property <bool> is_connected_bw: false;
 
     callback connect_device(string);
     callback disconnect_device(string);
     callback connect_multipoint(string);
+    callback disconnect_multipoint(string);
     callback refresh_devices();
 
     VerticalLayout {
@@ -84,6 +86,190 @@ export component MultipointPage inherits ScrollView {
                 touch_refresh := TouchArea {
                     clicked => {
                         root.refresh_devices();
+                    }
+                }
+            }
+        }
+
+        // Section: Bowers & Wilkins Hardware Multipoint Slots
+        if root.is_connected_bw : VerticalLayout {
+            spacing: 12px;
+
+            Text {
+                text: "BOWERS & WILKINS ACTIVE MULTIPOINT ROUTING";
+                color: Theme.text_muted;
+                font-size: 11px;
+                font-weight: 700;
+                letter-spacing: 1px;
+            }
+
+            if root.multipoint_slots.length == 0 : Rectangle {
+                background: Theme.bg_card;
+                border-radius: Theme.radius_md;
+                border-width: 1px;
+                border-color: Theme.border;
+                height: 72px;
+
+                Text {
+                    text: "Querying hardware multipoint routing slots over BLE GATT...";
+                    color: Theme.text_muted;
+                    font-size: 13px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            for slot in root.multipoint_slots : Rectangle {
+                background: Theme.bg_card;
+                border-radius: Theme.radius_md;
+                border-width: 1px;
+                border-color: slot.connected ? Theme.accent : Theme.border;
+                height: 72px;
+                clip: true;
+
+                HorizontalLayout {
+                    padding-left: 18px;
+                    padding-right: 18px;
+                    spacing: 16px;
+                    alignment: space-between;
+
+                    HorizontalLayout {
+                        spacing: 14px;
+                        alignment: start;
+
+                        VerticalLayout {
+                            alignment: center;
+
+                            Rectangle {
+                                width: 40px;
+                                height: 40px;
+                                border-radius: Theme.radius_sm;
+                                background: slot.connected ? Theme.icon_bg_amber : Theme.bg_input;
+                                border-width: 1px;
+                                border-color: slot.connected ? Theme.accent : Theme.border;
+
+                                Image {
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+                                    width: 22px;
+                                    height: 22px;
+                                    image-fit: contain;
+                                    source: @image-url("../../assets/icons/bluetooth.svg");
+                                    colorize: slot.connected ? Theme.accent : Theme.text_muted;
+                                }
+                            }
+                        }
+
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 3px;
+
+                            HorizontalLayout {
+                                spacing: 8px;
+
+                                Text {
+                                    text: slot.name != "" ? slot.name : "Paired Device";
+                                    color: Theme.text_primary;
+                                    font-size: 14px;
+                                    font-weight: 600;
+                                }
+
+                                if slot.connected : Rectangle {
+                                    border-radius: Theme.radius_pill;
+                                    background: #b8bb2622;
+                                    border-width: 1px;
+                                    border-color: #b8bb2655;
+                                    height: 18px;
+
+                                    HorizontalLayout {
+                                        padding-left: 6px;
+                                        padding-right: 6px;
+
+                                        Text {
+                                            text: "Routed Active";
+                                            color: Theme.success;
+                                            font-size: 10px;
+                                            font-weight: 600;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+
+                            Text {
+                                text: slot.address != "" ? slot.address : "Hardware Multipoint Slot";
+                                color: Theme.text_muted;
+                                font-size: 12px;
+                            }
+                        }
+                    }
+
+                    VerticalLayout {
+                        alignment: center;
+
+                        HorizontalLayout {
+                            spacing: 10px;
+
+                            if !slot.connected : Rectangle {
+                                border-radius: Theme.radius_md;
+                                background: touch_mp_c.has_hover ? Theme.accent : Theme.accent_subtle;
+                                border-width: 1px;
+                                border-color: Theme.accent;
+                                height: 36px;
+
+                                animate background { duration: 150ms; }
+                                animate border-color { duration: 150ms; }
+
+                                HorizontalLayout {
+                                    padding-left: 16px;
+                                    padding-right: 16px;
+
+                                    Text {
+                                        text: "Connect Slot";
+                                        color: touch_mp_c.has_hover ? Theme.bg_darkest : Theme.accent;
+                                        font-size: 13px;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                touch_mp_c := TouchArea {
+                                    clicked => {
+                                        root.connect_multipoint(slot.address != "" ? slot.address : slot.name);
+                                    }
+                                }
+                            }
+
+                            if slot.connected : Rectangle {
+                                border-radius: Theme.radius_md;
+                                background: touch_mp_dc.has_hover ? #fb493422 : Theme.bg_input;
+                                border-width: 1px;
+                                border-color: touch_mp_dc.has_hover ? Theme.danger : Theme.border;
+                                height: 36px;
+
+                                animate background { duration: 150ms; }
+                                animate border-color { duration: 150ms; }
+
+                                HorizontalLayout {
+                                    padding-left: 16px;
+                                    padding-right: 16px;
+
+                                    Text {
+                                        text: "Disconnect Slot";
+                                        color: touch_mp_dc.has_hover ? Theme.danger : Theme.text_secondary;
+                                        font-size: 13px;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                touch_mp_dc := TouchArea {
+                                    clicked => {
+                                        root.disconnect_multipoint(slot.address != "" ? slot.address : slot.name);
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

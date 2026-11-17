@@ -320,12 +320,12 @@ export component DashboardPage inherits ScrollView {
 
                 if root.vendor == "Bowers & Wilkins" : AncModeCard {
                     mode_id: "wind";
-                    title: "Auto / Wind";
+                    title: "Wind Reduction";
                     description: "Outdoor wind filter";
                     is_active: root.noise_mode == "wind" || root.noise_mode == "auto";
                     clicked => {
-                        root.noise_mode = "auto";
-                        root.set_anc("auto");
+                        root.noise_mode = "wind";
+                        root.set_anc("wind");
                     }
                 }
             }

@@ -72,6 +72,8 @@ pub struct ResonateState {
     pub audio_sink: String,
     /// Wear sensor sensitivity level for Bowers & Wilkins (0 = Low, 1 = Normal/Medium, 2 = High, -1 if unavailable).
     pub wear_sensitivity: i32,
+    /// Physical quick action button function (`"anc"` or `"voice"`).
+    pub action_button: String,
 }
 
 /// D-Bus interface implementation for `org.headbridge.Manager`.
@@ -224,6 +226,17 @@ impl ResonateDbusManager {
     #[zbus(property)]
     async fn wear_sensitivity(&self) -> i32 {
         self.manager.state.read().await.wear_sensitivity
+    }
+
+    /// Physical quick action button mapping (`"anc"`, `"voice"`).
+    #[zbus(property)]
+    async fn action_button(&self) -> String {
+        let b = self.manager.state.read().await.action_button.clone();
+        if b.is_empty() {
+            "anc".to_string()
+        } else {
+            b
+        }
     }
 
     /// Returns the full runtime status serialized as a JSON string.

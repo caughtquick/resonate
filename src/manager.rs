@@ -50,6 +50,7 @@ pub fn format_state_json(s: &ResonateState) -> String {
         "oneBudAnc": s.one_bud_anc,
         "chimeVolume": s.chime_volume,
         "standbyMinutes": s.standby_minutes,
+        "actionButton": if s.action_button.is_empty() { "anc" } else { &s.action_button },
         "equalizerPreset": s.equalizer_preset,
     })).unwrap_or_else(|_| "{}".to_string())
 }
@@ -697,8 +698,10 @@ impl DeviceManager {
                 0
             };
             if client.set_action_button(mode).await.is_ok() {
+                let chosen = if mode == 1 { "voice" } else { "anc" };
+                self.state.write().await.action_button = chosen.to_string();
                 self.notify_state_changed().await;
-                return (true, format!("Action button configured to {}", action));
+                return (true, format!("Action button configured to {}", chosen));
             }
         }
         (

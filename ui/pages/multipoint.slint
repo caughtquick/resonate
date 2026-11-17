@@ -116,6 +116,7 @@ export component MultipointPage inherits ScrollView {
                 border-width: 1px;
                 border-color: dev.connected ? Theme.accent : Theme.border;
                 height: 72px;
+                clip: true;
 
                 HorizontalLayout {
                     padding-left: 18px;
@@ -127,17 +128,27 @@ export component MultipointPage inherits ScrollView {
                         spacing: 14px;
                         alignment: start;
 
-                        Rectangle {
-                            width: 40px;
-                            height: 40px;
-                            border-radius: Theme.radius_sm;
-                            background: dev.connected ? Theme.accent_subtle : Theme.bg_input;
+                        // Device icon box - centered vertically
+                        VerticalLayout {
+                            alignment: center;
 
-                            Image {
-                                source: @image-url("../../assets/icons/headphone.svg");
-                                width: 20px;
-                                height: 20px;
-                                colorize: dev.connected ? Theme.accent_hover : Theme.text_muted;
+                            Rectangle {
+                                width: 40px;
+                                height: 40px;
+                                border-radius: Theme.radius_sm;
+                                background: dev.connected ? Theme.icon_bg_amber : Theme.bg_input;
+                                border-width: 1px;
+                                border-color: dev.connected ? Theme.accent : Theme.border;
+
+                                Image {
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+                                    width: 22px;
+                                    height: 22px;
+                                    image-fit: contain;
+                                    source: @image-url("../../assets/icons/headphone.svg");
+                                    colorize: dev.connected ? Theme.accent : Theme.text_muted;
+                                }
                             }
                         }
 
@@ -158,6 +169,8 @@ export component MultipointPage inherits ScrollView {
                                 if dev.connected : Rectangle {
                                     border-radius: Theme.radius_pill;
                                     background: #b8bb2622;
+                                    border-width: 1px;
+                                    border-color: #b8bb2655;
                                     height: 18px;
 
                                     HorizontalLayout {
@@ -183,66 +196,69 @@ export component MultipointPage inherits ScrollView {
                         }
                     }
 
-                    HorizontalLayout {
+                    VerticalLayout {
                         alignment: center;
-                        spacing: 10px;
 
-                        if !dev.connected : Rectangle {
-                            border-radius: Theme.radius_md;
-                            background: touch_connect.has_hover ? Theme.accent : Theme.accent_subtle;
-                            border-width: 1px;
-                            border-color: Theme.accent;
-                            height: 36px;
+                        HorizontalLayout {
+                            spacing: 10px;
 
-                            animate background { duration: 150ms; }
-                            animate border-color { duration: 150ms; }
+                            if !dev.connected : Rectangle {
+                                border-radius: Theme.radius_md;
+                                background: touch_connect.has_hover ? Theme.accent : Theme.accent_subtle;
+                                border-width: 1px;
+                                border-color: Theme.accent;
+                                height: 36px;
 
-                            HorizontalLayout {
-                                padding-left: 16px;
-                                padding-right: 16px;
+                                animate background { duration: 150ms; }
+                                animate border-color { duration: 150ms; }
 
-                                Text {
-                                    text: "Connect";
-                                    color: touch_connect.has_hover ? Theme.bg_darkest : Theme.accent;
-                                    font-size: 13px;
-                                    font-weight: 600;
-                                    vertical-alignment: center;
+                                HorizontalLayout {
+                                    padding-left: 16px;
+                                    padding-right: 16px;
+
+                                    Text {
+                                        text: "Connect";
+                                        color: touch_connect.has_hover ? Theme.bg_darkest : Theme.accent;
+                                        font-size: 13px;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                touch_connect := TouchArea {
+                                    clicked => {
+                                        root.connect_device(dev.address);
+                                    }
                                 }
                             }
 
-                            touch_connect := TouchArea {
-                                clicked => {
-                                    root.connect_device(dev.address);
+                            if dev.connected : Rectangle {
+                                border-radius: Theme.radius_md;
+                                background: touch_dc.has_hover ? #fb493422 : Theme.bg_input;
+                                border-width: 1px;
+                                border-color: touch_dc.has_hover ? Theme.danger : Theme.border;
+                                height: 36px;
+
+                                animate background { duration: 150ms; }
+                                animate border-color { duration: 150ms; }
+
+                                HorizontalLayout {
+                                    padding-left: 16px;
+                                    padding-right: 16px;
+
+                                    Text {
+                                        text: "Disconnect";
+                                        color: touch_dc.has_hover ? Theme.danger : Theme.text_secondary;
+                                        font-size: 13px;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
                                 }
-                            }
-                        }
 
-                        if dev.connected : Rectangle {
-                            border-radius: Theme.radius_md;
-                            background: touch_dc.has_hover ? #fb493422 : Theme.bg_input;
-                            border-width: 1px;
-                            border-color: touch_dc.has_hover ? Theme.danger : Theme.border;
-                            height: 36px;
-
-                            animate background { duration: 150ms; }
-                            animate border-color { duration: 150ms; }
-
-                            HorizontalLayout {
-                                padding-left: 16px;
-                                padding-right: 16px;
-
-                                Text {
-                                    text: "Disconnect";
-                                    color: touch_dc.has_hover ? Theme.danger : Theme.text_secondary;
-                                    font-size: 13px;
-                                    font-weight: 600;
-                                    vertical-alignment: center;
-                                }
-                            }
-
-                            touch_dc := TouchArea {
-                                clicked => {
-                                    root.disconnect_device(dev.address);
+                                touch_dc := TouchArea {
+                                    clicked => {
+                                        root.disconnect_device(dev.address);
+                                    }
                                 }
                             }
                         }

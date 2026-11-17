@@ -466,9 +466,14 @@ export component MainWindow inherits Window {
                             alignment: space-between;
 
                             Text {
-                                text: "Battery: " + (root.battery_percent >= 0 ? (root.battery_percent + "%") : (root.battery_left >= 0 ? (root.battery_left + "% / " + root.battery_right + "%") : "--"));
+                                text: (root.battery_left >= 0 || root.battery_right >= 0 || root.battery_case >= 0 || (root.vendor != "Bowers & Wilkins" && root.connected)) ?
+                                    ("L: " + (root.battery_left >= 0 ? (root.battery_left + "%") : (root.battery_percent >= 0 ? (root.battery_percent + "%") : "--")) +
+                                     " R: " + (root.battery_right >= 0 ? (root.battery_right + "%") : (root.battery_percent >= 0 ? (root.battery_percent + "%") : "--")) +
+                                     " Case: " + (root.battery_case >= 0 ? (root.battery_case + "%") : "--")) :
+                                    ("Battery: " + (root.battery_percent >= 0 ? (root.battery_percent + "%") : "--"));
                                 color: Theme.text_secondary;
                                 font-size: 11px;
+                                overflow: elide;
                             }
 
                             if root.is_charging : Image {

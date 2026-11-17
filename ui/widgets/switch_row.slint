@@ -34,7 +34,7 @@ export component SettingSwitchRow inherits Rectangle {
                     width: 36px;
                     height: 36px;
                     border-radius: Theme.radius_sm;
-                    background: root.checked ? Theme.icon_bg_amber : Theme.bg_input;
+                    background: root.checked ? Theme.accent_subtle : Theme.bg_input;
                     border-width: 1px;
                     border-color: root.checked ? Theme.accent : Theme.border;
 
@@ -81,9 +81,9 @@ export component SettingSwitchRow inherits Rectangle {
                 width: 44px;
                 height: 24px;
                 border-radius: 12px;
-                background: root.checked ? Theme.success : #3c3836;
+                background: root.checked ? Theme.success : Theme.bg_pill;
                 border-width: 1px;
-                border-color: root.checked ? Theme.success : #504945;
+                border-color: root.checked ? Theme.success : Theme.border_light;
 
                 animate background { duration: 150ms; }
                 animate border-color { duration: 150ms; }
@@ -95,7 +95,7 @@ export component SettingSwitchRow inherits Rectangle {
                     width: 18px;
                     height: 18px;
                     border-radius: 9px;
-                    background: root.checked ? #1d2021 : #ebdbb2;
+                    background: root.checked ? Theme.bg_darkest : Theme.text_primary;
 
                     animate x { duration: 150ms; easing: ease-out; }
                     animate background { duration: 150ms; }

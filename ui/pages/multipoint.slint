@@ -46,10 +46,13 @@ export component MultipointPage inherits ScrollView {
 
             Rectangle {
                 border-radius: Theme.radius_md;
-                background: Theme.bg_card;
+                background: touch_refresh.has_hover ? Theme.bg_card_hover : Theme.bg_card;
                 border-width: 1px;
-                border-color: Theme.border;
+                border-color: touch_refresh.has_hover ? Theme.text_secondary : Theme.border;
                 height: 36px;
+
+                animate background { duration: 150ms; }
+                animate border-color { duration: 150ms; }
 
                 HorizontalLayout {
                     padding-left: 14px;
@@ -57,24 +60,28 @@ export component MultipointPage inherits ScrollView {
                     spacing: 8px;
                     alignment: center;
 
-                    Image {
-                        source: @image-url("../../assets/icons/refresh.svg");
-                        width: 14px;
-                        height: 14px;
-                        colorize: Theme.text_primary;
-                        vertical-alignment: center;
+                    VerticalLayout {
+                        alignment: center;
+
+                        Image {
+                            source: @image-url("../../assets/icons/refresh.svg");
+                            width: 14px;
+                            height: 14px;
+                            image-fit: contain;
+                            colorize: touch_refresh.has_hover ? Theme.accent : Theme.text_primary;
+                        }
                     }
 
                     Text {
                         text: "Refresh";
-                        color: Theme.text_primary;
+                        color: touch_refresh.has_hover ? Theme.accent : Theme.text_primary;
                         font-size: 13px;
                         font-weight: 600;
                         vertical-alignment: center;
                     }
                 }
 
-                TouchArea {
+                touch_refresh := TouchArea {
                     clicked => {
                         root.refresh_devices();
                     }

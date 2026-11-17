@@ -60,17 +60,26 @@ export component DiagnosticsPage inherits ScrollView {
                         spacing: 14px;
                         alignment: start;
 
-                        Rectangle {
-                            width: 44px;
-                            height: 44px;
-                            border-radius: Theme.radius_md;
-                            background: root.daemon_running ? #b8bb2622 : #fb493422;
+                        VerticalLayout {
+                            alignment: center;
 
-                            Image {
-                                source: @image-url("../../assets/icons/activity.svg");
-                                width: 22px;
-                                height: 22px;
-                                colorize: root.daemon_running ? Theme.success : Theme.danger;
+                            Rectangle {
+                                width: 44px;
+                                height: 44px;
+                                border-radius: Theme.radius_md;
+                                background: root.daemon_running ? #b8bb2622 : #fb493422;
+                                border-width: 1px;
+                                border-color: root.daemon_running ? #b8bb2655 : #fb493455;
+
+                                Image {
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+                                    width: 22px;
+                                    height: 22px;
+                                    image-fit: contain;
+                                    source: @image-url("../../assets/icons/activity.svg");
+                                    colorize: root.daemon_running ? Theme.success : Theme.danger;
+                                }
                             }
                         }
 

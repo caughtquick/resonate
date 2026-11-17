@@ -76,12 +76,16 @@ export component BatteryPod inherits Rectangle {
                             vertical-alignment: center;
                         }
 
-                        if root.charging : Image {
-                            source: @image-url("../../assets/icons/bolt.svg");
-                            width: 14px;
-                            height: 14px;
-                            colorize: Theme.success;
-                            vertical-alignment: center;
+                        if root.charging : VerticalLayout {
+                            alignment: center;
+
+                            Image {
+                                source: @image-url("../../assets/icons/bolt.svg");
+                                width: 14px;
+                                height: 14px;
+                                image-fit: contain;
+                                colorize: Theme.success;
+                            }
                         }
                     }
                 }

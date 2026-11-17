@@ -21,7 +21,7 @@ INSTALLED_STUDIO := $(DESTDIR)$(BINDIR)/resonate-studio
 INSTALLED_ICON := $(DESTDIR)$(ICONS_DIR)/resonate-studio.svg
 INSTALLED_DESKTOP := $(DESTDIR)$(APPLICATIONS_DIR)/resonate-studio.desktop
 
-.PHONY: all build release cli studio install install-user install-cli install-studio uninstall uninstall-user clean test
+.PHONY: all build release cli studio install install-user install-user-cli install-user-studio install-cli install-studio uninstall uninstall-user uninstall-user-cli uninstall-user-studio uninstall-cli uninstall-studio clean test
 
 all: build
 
@@ -78,11 +78,29 @@ install-studio: $(INSTALLED_STUDIO) $(INSTALLED_ICON) $(INSTALLED_DESKTOP)
 install-user:
 	@$(MAKE) install PREFIX="$(HOME)/.local"
 
+install-user-cli:
+	@$(MAKE) install-cli PREFIX="$(HOME)/.local"
+
+install-user-studio:
+	@$(MAKE) install-studio PREFIX="$(HOME)/.local"
+
 uninstall-user:
 	@$(MAKE) uninstall PREFIX="$(HOME)/.local"
 
-uninstall:
+uninstall-user-cli:
+	@$(MAKE) uninstall-cli PREFIX="$(HOME)/.local"
+
+uninstall-user-studio:
+	@$(MAKE) uninstall-studio PREFIX="$(HOME)/.local"
+
+uninstall: uninstall-cli uninstall-studio
+	@echo "Resonate uninstalled from $(PREFIX)"
+
+uninstall-cli:
 	rm -f "$(DESTDIR)$(BINDIR)/resonate"
+	@echo "Resonate CLI uninstalled from $(PREFIX)"
+
+uninstall-studio:
 	rm -f "$(DESTDIR)$(BINDIR)/resonate-studio"
 	rm -f "$(DESTDIR)$(BINDIR)/resonate-gui"
 	rm -f "$(DESTDIR)$(ICONS_DIR)/resonate-studio.svg"
@@ -92,7 +110,7 @@ uninstall:
 	@if [ -z "$(DESTDIR)" ] && command -v update-desktop-database >/dev/null 2>&1; then \
 		update-desktop-database "$(DESTDIR)$(APPLICATIONS_DIR)" || true; \
 	fi
-	@echo "Resonate uninstalled from $(PREFIX)"
+	@echo "Resonate Studio uninstalled from $(PREFIX)"
 
 test:
 	cargo test

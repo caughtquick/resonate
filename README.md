@@ -130,15 +130,36 @@ For developers, protocol engineers, and advanced integrators, deep-dive specific
 
 ## Installation & Setup
 
-### Building from Source
+### Building and Installing with Make
 
-Ensure you have Rust and Cargo installed (1.75+ recommended):
+Resonate includes a smart Makefile with selective dependency tracking that only rebuilds and installs changed files:
 
 ```bash
 git clone https://github.com/caughtquick/resonate.git
 cd resonate
-cargo build --release
-cp target/release/resonate ~/.cargo/bin/
+
+# Install everything locally for the current user (recommended, no sudo needed):
+make install-user
+
+# Or install individual components:
+make install-user-cli       # Only CLI / daemon (~/.local/bin/resonate)
+make install-user-studio    # Only Resonate Studio GUI, icon & desktop file
+
+# Systemwide installation (requires sudo):
+sudo make install
+sudo make install-cli       # Only CLI / daemon (/usr/local/bin/resonate)
+sudo make install-studio    # Only Resonate Studio GUI, icon & desktop file
+```
+
+### Uninstallation
+
+```bash
+make uninstall-user         # Remove all user-level components
+make uninstall-user-cli     # Remove user-level CLI
+make uninstall-user-studio  # Remove user-level Resonate Studio & desktop entry
+
+# Systemwide:
+sudo make uninstall
 ```
 
 ### Systemd User Daemon Setup

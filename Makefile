@@ -4,7 +4,7 @@ DATADIR ?= $(PREFIX)/share
 APPLICATIONS_DIR ?= $(DATADIR)/applications
 ICONS_DIR ?= $(DATADIR)/icons/hicolor/scalable/apps
 
-.PHONY: all build release install uninstall clean test
+.PHONY: all build release install install-user uninstall uninstall-user clean test
 
 all: build
 
@@ -12,6 +12,12 @@ build:
 	cargo build --release
 
 release: build
+
+install-user:
+	@$(MAKE) install PREFIX="$(HOME)/.local"
+
+uninstall-user:
+	@$(MAKE) uninstall PREFIX="$(HOME)/.local"
 
 install: build
 	install -d "$(DESTDIR)$(BINDIR)"

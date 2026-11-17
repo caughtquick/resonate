@@ -49,107 +49,8 @@ enum GuiCommand {
     RestartDaemon,
 }
 
-const DESKTOP_ENTRY_TEMPLATE: &str = include_str!("../assets/resonate-studio.desktop");
-const ICON_SVG: &str = include_str!("../assets/icons/headphone.svg");
-
-fn print_help() {
-    println!("Resonate Studio - Linux Bluetooth Headphone Management GUI\n");
-    println!("USAGE:");
-    println!("    resonate-studio [OPTIONS]\n");
-    println!("OPTIONS:");
-    println!("    --install-desktop     Register Resonate Studio in your application menu (~/.local/share/applications)");
-    println!("    --uninstall-desktop   Remove Resonate Studio from your application menu");
-    println!("    -h, --help            Print help information");
-}
-
-fn install_desktop_entry() -> Result<(), Box<dyn std::error::Error>> {
-    let home = std::env::var("HOME").map_err(|_| "HOME environment variable not set")?;
-    let apps_dir = std::path::PathBuf::from(&home).join(".local/share/applications");
-    let icons_dir = std::path::PathBuf::from(&home).join(".local/share/icons/hicolor/scalable/apps");
-
-    std::fs::create_dir_all(&apps_dir)?;
-    std::fs::create_dir_all(&icons_dir)?;
-
-    // Clean up any legacy -gui files
-    let _ = std::fs::remove_file(apps_dir.join("resonate-gui.desktop"));
-    let _ = std::fs::remove_file(icons_dir.join("resonate-gui.svg"));
-
-    let icon_path = icons_dir.join("resonate-studio.svg");
-    std::fs::write(&icon_path, ICON_SVG)?;
-    println!("Installed icon: {}", icon_path.display());
-
-    let exec_path = std::env::current_exe()?
-        .canonicalize()?
-        .to_string_lossy()
-        .to_string();
-
-    let desktop_content = DESKTOP_ENTRY_TEMPLATE
-        .replace("Exec=resonate-studio", &format!("Exec={}", exec_path))
-        .replace("Icon=resonate-studio", "Icon=resonate-studio");
-
-    let desktop_path = apps_dir.join("resonate-studio.desktop");
-    std::fs::write(&desktop_path, desktop_content)?;
-    println!("Installed desktop entry: {}", desktop_path.display());
-    println!("Executable configured: {}", exec_path);
-
-    if let Ok(mut child) = std::process::Command::new("update-desktop-database")
-        .arg(&apps_dir)
-        .spawn()
-    {
-        let _ = child.wait();
-        println!("Updated desktop application database.");
-    }
-
-    println!("\nResonate Studio successfully registered! You can now launch it from your desktop launcher.");
-    Ok(())
-}
-
-fn uninstall_desktop_entry() -> Result<(), Box<dyn std::error::Error>> {
-    let home = std::env::var("HOME").map_err(|_| "HOME environment variable not set")?;
-    let desktop_path = std::path::PathBuf::from(&home).join(".local/share/applications/resonate-studio.desktop");
-    let icon_path = std::path::PathBuf::from(&home).join(".local/share/icons/hicolor/scalable/apps/resonate-studio.svg");
-
-    if desktop_path.exists() {
-        std::fs::remove_file(&desktop_path)?;
-        println!("Removed: {}", desktop_path.display());
-    }
-    if icon_path.exists() {
-        std::fs::remove_file(&icon_path)?;
-        println!("Removed: {}", icon_path.display());
-    }
-
-    // Also clean up any legacy -gui files if present
-    let legacy_desktop = std::path::PathBuf::from(&home).join(".local/share/applications/resonate-gui.desktop");
-    let legacy_icon = std::path::PathBuf::from(&home).join(".local/share/icons/hicolor/scalable/apps/resonate-gui.svg");
-    let _ = std::fs::remove_file(legacy_desktop);
-    let _ = std::fs::remove_file(legacy_icon);
-
-    let apps_dir = std::path::PathBuf::from(&home).join(".local/share/applications");
-    if let Ok(mut child) = std::process::Command::new("update-desktop-database")
-        .arg(&apps_dir)
-        .spawn()
-    {
-        let _ = child.wait();
-    }
-
-    println!("Resonate Studio desktop entry successfully uninstalled.");
-    Ok(())
-}
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = std::env::args().collect();
-    if args.iter().any(|a| a == "--install-desktop") {
-        return install_desktop_entry();
-    }
-    if args.iter().any(|a| a == "--uninstall-desktop") {
-        return uninstall_desktop_entry();
-    }
-    if args.iter().any(|a| a == "--help" || a == "-h") {
-        print_help();
-        return Ok(());
-    }
-
     let main_window = MainWindow::new()?;
 
     // Initialize and watch user theme from ~/.config/resonate-studio/config.toml
@@ -206,10 +107,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         update_ui_status(&weak_ui, &status);
                     }
 
-                    // Initial fetch of paired devices
+                    // Initial fetch of paired devices (supported headphones only)
                     if let Ok(devs) = client.list_devices().await {
                         let dev_entries: Vec<DeviceEntry> = devs
                             .into_iter()
+                            .filter(|d| d.is_supported())
                             .map(|d| {
                                 let vendor = d.vendor_display().into();
                                 DeviceEntry {
@@ -243,6 +145,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     });
 
                     // Subscribe to StateChanged signals
+                    let mut last_telemetry_sig = String::new();
                     if let Ok(mut stream) = client.subscribe_state_changed().await {
                         while let Some(msg) = stream.next().await {
                             if let Ok((json_str,)) = msg.body().deserialize::<(String,)>() {
@@ -263,7 +166,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         anc_mode,
                                         if bat >= 0 { bat.to_string() } else { "--".to_string() }
                                     );
-                                    add_log(&weak_ui, &logs_store_bg, &log_msg, false);
+                                    // Deduplicate telemetry logs so identical periodic telemetry does not spam the stream
+                                    if log_msg != last_telemetry_sig {
+                                        last_telemetry_sig = log_msg.clone();
+                                        add_log(&weak_ui, &logs_store_bg, &log_msg, false);
+                                    }
                                 }
                             }
                         }
@@ -539,6 +446,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Ok(status) = c.get_status().await {
                             update_ui_status(&weak_ui_cmd, &status);
                         }
+                        if let Ok(devs) = c.list_devices().await {
+                            let dev_entries: Vec<DeviceEntry> = devs
+                                .into_iter()
+                                .filter(|d| d.is_supported())
+                                .map(|d| {
+                                    let vendor = d.vendor_display().into();
+                                    DeviceEntry {
+                                        name: d.name.into(),
+                                        address: d.address.into(),
+                                        vendor,
+                                        connected: d.connected,
+                                        is_multipoint: false,
+                                    }
+                                })
+                                .collect();
+
+                            let _ = weak_ui_cmd.upgrade_in_event_loop(move |ui| {
+                                let model = Rc::new(VecModel::from(dev_entries));
+                                ui.set_devices(ModelRc::from(model));
+                            });
+                        }
                     }
                 }
                 GuiCommand::DisconnectDevice => {
@@ -552,6 +480,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         );
                         if let Ok(status) = c.get_status().await {
                             update_ui_status(&weak_ui_cmd, &status);
+                        }
+                        if let Ok(devs) = c.list_devices().await {
+                            let dev_entries: Vec<DeviceEntry> = devs
+                                .into_iter()
+                                .filter(|d| d.is_supported())
+                                .map(|d| {
+                                    let vendor = d.vendor_display().into();
+                                    DeviceEntry {
+                                        name: d.name.into(),
+                                        address: d.address.into(),
+                                        vendor,
+                                        connected: d.connected,
+                                        is_multipoint: false,
+                                    }
+                                })
+                                .collect();
+
+                            let _ = weak_ui_cmd.upgrade_in_event_loop(move |ui| {
+                                let model = Rc::new(VecModel::from(dev_entries));
+                                ui.set_devices(ModelRc::from(model));
+                            });
                         }
                     }
                 }
@@ -572,6 +521,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Ok(devs) = c.list_devices().await {
                             let dev_entries: Vec<DeviceEntry> = devs
                                 .into_iter()
+                                .filter(|d| d.is_supported())
                                 .map(|d| {
                                     let vendor = d.vendor_display().into();
                                     DeviceEntry {

@@ -189,8 +189,13 @@ export component MultipointPage inherits ScrollView {
 
                         if !dev.connected : Rectangle {
                             border-radius: Theme.radius_md;
-                            background: Theme.accent;
+                            background: touch_connect.has_hover ? Theme.accent : Theme.accent_subtle;
+                            border-width: 1px;
+                            border-color: Theme.accent;
                             height: 36px;
+
+                            animate background { duration: 150ms; }
+                            animate border-color { duration: 150ms; }
 
                             HorizontalLayout {
                                 padding-left: 16px;
@@ -198,14 +203,14 @@ export component MultipointPage inherits ScrollView {
 
                                 Text {
                                     text: "Connect";
-                                    color: #1d2021;
+                                    color: touch_connect.has_hover ? Theme.bg_darkest : Theme.accent;
                                     font-size: 13px;
                                     font-weight: 600;
                                     vertical-alignment: center;
                                 }
                             }
 
-                            TouchArea {
+                            touch_connect := TouchArea {
                                 clicked => {
                                     root.connect_device(dev.address);
                                 }
@@ -214,10 +219,13 @@ export component MultipointPage inherits ScrollView {
 
                         if dev.connected : Rectangle {
                             border-radius: Theme.radius_md;
-                            background: Theme.bg_input;
+                            background: touch_dc.has_hover ? #fb493422 : Theme.bg_input;
                             border-width: 1px;
-                            border-color: Theme.border;
+                            border-color: touch_dc.has_hover ? Theme.danger : Theme.border;
                             height: 36px;
+
+                            animate background { duration: 150ms; }
+                            animate border-color { duration: 150ms; }
 
                             HorizontalLayout {
                                 padding-left: 16px;
@@ -225,14 +233,14 @@ export component MultipointPage inherits ScrollView {
 
                                 Text {
                                     text: "Disconnect";
-                                    color: Theme.text_secondary;
+                                    color: touch_dc.has_hover ? Theme.danger : Theme.text_secondary;
                                     font-size: 13px;
                                     font-weight: 600;
                                     vertical-alignment: center;
                                 }
                             }
 
-                            TouchArea {
+                            touch_dc := TouchArea {
                                 clicked => {
                                     root.disconnect_device(dev.address);
                                 }

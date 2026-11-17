@@ -935,6 +935,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7704b5fdd17b18ae31c4c1da5a2e0305a2bf17b5249300a9ee9ed7b72114c636"
 
 [[package]]
+name = "cquifw"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "slint",
+ "slint-build",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "crc32fast"
 version = "1.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3756,6 +3766,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "clap_complete",
+ "cquifw",
  "futures-lite",
  "libc",
  "rmp-serde",

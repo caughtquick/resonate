@@ -20,6 +20,7 @@ clap_complete = "4.5"
 futures-lite = "2.6"
 slint = "1.19"
 toml = "0.8"
+cquifw = { path = "../cquifw" }
 
 [build-dependencies]
 slint-build = "1.19"
